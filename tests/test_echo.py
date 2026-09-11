@@ -1,4 +1,6 @@
 """Unit tests for echo. Run: python3 -m pytest tests/test_echo.py -q"""
+import importlib.machinery
+import importlib.util
 import json
 import os
 import subprocess
@@ -8,6 +10,17 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO, "bin")
 sys.path.insert(0, os.path.join(REPO, "lib"))
 import echo_common as ec  # noqa: E402
+
+
+def _load_watch_module():
+    """Import bin/echo-watch (no .py extension) as a module so its helpers can
+    be unit-tested in-process without shelling out or touching the network."""
+    path = os.path.join(BIN, "echo-watch")
+    loader = importlib.machinery.SourceFileLoader("echo_watch", path)
+    spec = importlib.util.spec_from_loader("echo_watch", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
 
 
 # ---- lib: ticket regex ----
@@ -419,3 +432,196 @@ def test_ship_dry_run_with_ticket(tmp_path):
     assert r.returncode == 0
     assert "FEAT-3816: do the thing" in r.stdout
     assert "Ticket: FEAT-3816" in r.stdout
+
+
+# ---- lib: watch config defaults + artifact path ----
+
+def test_config_watch_defaults(tmp_path):
+    cfg = ec.load_config(str(tmp_path))
+    assert cfg["watch_gate"] == "block"
+    assert "review_bot_login" in cfg
+    assert cfg["review_bot_login"] == ""
+
+
+def test_watch_artifact_path_is_ci_scoped(tmp_path):
+    root = str(tmp_path)
+    assert ec.watch_artifact_relpath("FEAT-1") == os.path.join(
+        ".echo", "verify", "FEAT-1-ci.md")
+    p = ec.watch_artifact_path("FEAT-1", root)
+    assert p == os.path.join(root, ".echo", "verify", "FEAT-1-ci.md")
+    assert p.endswith(os.path.join(".echo", "verify", "FEAT-1-ci.md"))
+
+
+# ---- lib: pure CI check parsing ----
+
+def test_parse_checks_all_pass():
+    data = [{"bucket": "pass", "name": "build"}, {"bucket": "pass", "name": "lint"}]
+    assert ec.parse_checks(data) == ("pass", [])
+
+
+def test_parse_checks_one_fail():
+    data = [{"bucket": "pass", "name": "build"}, {"bucket": "fail", "name": "lint"}]
+    assert ec.parse_checks(data) == ("fail", ["lint"])
+
+
+def test_parse_checks_pending_wins():
+    data = [{"bucket": "fail", "name": "lint"}, {"bucket": "pending", "name": "e2e"}]
+    result, failing = ec.parse_checks(data)
+    assert result == "pending"
+    assert "lint" in failing
+
+
+def test_parse_checks_empty_is_pending():
+    assert ec.parse_checks([]) == ("pending", [])
+
+
+# ---- CLI: echo-watch fail-open run (no remote / no PR) ----
+
+def test_watch_run_fail_open_no_pr(tmp_path):
+    root = _init_repo(tmp_path)  # git repo, no remote, no PR
+    r = _run(["python3", os.path.join(BIN, "echo-watch"), "run",
+              "--ticket", "FEAT-3816"], root)
+    assert r.returncode == 0
+    art = os.path.join(root, ".echo", "verify", "FEAT-3816-ci.md")
+    assert os.path.exists(art)
+    with open(art, encoding="utf-8") as fh:
+        body = fh.read()
+    assert "result: skipped" in body
+    assert "post " not in r.stdout  # no Jira event emitted on the fail-open path
+
+
+def test_watch_gh_timeout_branch_fails_open(monkeypatch):
+    # A hung gh call (simulated as TimeoutExpired) is treated as a gh failure:
+    # _gh returns None and _gh_available returns False, never a traceback/hang.
+    mod = _load_watch_module()
+
+    def _raise_timeout(*a, **k):
+        raise subprocess.TimeoutExpired(cmd="gh", timeout=k.get("timeout", 1))
+
+    monkeypatch.setattr(mod.subprocess, "run", _raise_timeout)
+    assert mod._gh(["pr", "view"], cwd=".") is None
+    assert mod._gh_available() is False
+
+
+def test_watch_run_fail_open_on_gh_timeout(tmp_path, monkeypatch):
+    # The bounded `run` path must fail open (skipped artifact, exit 0) when gh
+    # hangs, not block forever. Simulate a hung gh with no real network.
+    root = _init_repo(tmp_path)
+    mod = _load_watch_module()
+    real_run = subprocess.run  # capture before patching the shared module
+
+    def _raise_timeout(cmd, *a, **k):
+        if cmd and cmd[0] == "gh":
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=k.get("timeout", 1))
+        return real_run(cmd, *a, **k)  # git and friends stay real
+
+    monkeypatch.setattr(mod.subprocess, "run", _raise_timeout)
+
+    class _Args:
+        ticket = "FEAT-3816"
+        author = None
+        interval = 15
+        max_wait = 120
+
+    monkeypatch.chdir(root)
+    try:
+        mod.cmd_run(_Args())
+        raised = None
+    except SystemExit as exc:
+        raised = exc.code
+    assert raised == 0  # fail open, never a hang or crash
+    art = os.path.join(root, ".echo", "verify", "FEAT-3816-ci.md")
+    assert os.path.exists(art)
+    with open(art, encoding="utf-8") as fh:
+        assert "result: skipped" in fh.read()
+
+
+def test_watch_run_rejects_bad_ticket(tmp_path):
+    # An invalid or traversal ticket exits 2 and writes nothing outside verify/.
+    root = _init_repo(tmp_path)
+    for bad in ("../evil", "not-a-ticket"):
+        r = _run(["python3", os.path.join(BIN, "echo-watch"), "run",
+                  "--ticket", bad], root)
+        assert r.returncode == 2
+    # `../evil` would resolve to .echo/evil-ci.md (one level above verify/).
+    assert not os.path.exists(os.path.join(root, ".echo", "evil-ci.md"))
+    verify = os.path.join(root, ".echo", "verify")
+    stray = os.listdir(verify) if os.path.isdir(verify) else []
+    assert stray == []  # no artifact written for a rejected ticket
+
+
+def test_watch_run_rejects_nonpositive_poll(tmp_path):
+    # A 0/negative interval or max-wait is rejected so it cannot busy-loop.
+    root = _init_repo(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-watch"), "run",
+              "--ticket", "FEAT-3816", "--interval", "0"], root)
+    assert r.returncode == 2
+    r2 = _run(["python3", os.path.join(BIN, "echo-watch"), "run",
+               "--ticket", "FEAT-3816", "--max-wait", "-5"], root)
+    assert r2.returncode == 2
+
+
+# ---- CLI: mandatory watch gate at ship -> done ----
+
+def _ship_ready(tmp_path):
+    root = _init_repo(tmp_path)
+    S = os.path.join(BIN, "echo-stage")
+    _run(["python3", S, "set-stage", "--stage", "ship"], root)
+    _run(["python3", S, "approve"], root)  # approve the ship gate
+    return root, S
+
+
+def test_watch_gate_blocks_without_artifact(tmp_path):
+    root, S = _ship_ready(tmp_path)
+    r = _run(["python3", S, "next"], root)
+    assert r.returncode == 2  # no watch artifact -> blocked
+    assert ec.load_state(root)["items"]["FEAT-3816"]["stage"] == "ship"  # did not advance
+
+
+def test_watch_gate_allows_with_artifact(tmp_path):
+    root, S = _ship_ready(tmp_path)
+    art = ec.watch_artifact_path("FEAT-3816", root)
+    os.makedirs(os.path.dirname(art), exist_ok=True)
+    with open(art, "w", encoding="utf-8") as fh:
+        fh.write("- result: pass\n")
+    r = _run(["python3", S, "next"], root)
+    assert r.returncode == 0
+    assert "advanced:done" in r.stdout
+
+
+def test_watch_gate_off_advances_without_artifact(tmp_path):
+    root, S = _ship_ready(tmp_path)
+    cfg = ec.load_config(root)
+    cfg["watch_gate"] = "off"
+    ec.save_config(cfg, root)
+    r = _run(["python3", S, "next"], root)
+    assert r.returncode == 0
+    assert "advanced:done" in r.stdout
+
+
+def test_watch_gate_fails_open_without_active_item(tmp_path):
+    root = str(tmp_path)  # no echo state at all
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "next"], root)
+    assert r.returncode == 2  # blocked by the _require_state guard, never crashes
+
+
+# ---- CLI: ledger re-alert with parameterized event keys ----
+
+def test_ledger_realert_on_new_sha(tmp_path):
+    root = _init_repo(tmp_path)  # FEAT-3816 active
+    S = os.path.join(BIN, "echo-stage")
+    _run(["python3", S, "comment-done", "--event", "ci:failed:sha1"], root)
+    same = _run(["python3", S, "comment-needed", "--event", "ci:failed:sha1"], root)
+    assert same.stdout.strip() == "skip"                 # same sha -> no re-post
+    fresh = _run(["python3", S, "comment-needed", "--event", "ci:failed:sha2"], root)
+    assert fresh.stdout.strip() == "post FEAT-3816"      # new sha -> re-alert
+
+
+def test_ledger_realert_on_new_review_id(tmp_path):
+    root = _init_repo(tmp_path)
+    S = os.path.join(BIN, "echo-stage")
+    _run(["python3", S, "comment-done", "--event", "review:seen:1001"], root)
+    same = _run(["python3", S, "comment-needed", "--event", "review:seen:1001"], root)
+    assert same.stdout.strip() == "skip"
+    fresh = _run(["python3", S, "comment-needed", "--event", "review:seen:1002"], root)
+    assert fresh.stdout.strip() == "post FEAT-3816"

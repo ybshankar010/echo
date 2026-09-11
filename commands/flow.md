@@ -50,7 +50,13 @@ Repeat until the item reaches `done` or you hit a stop:
      summarize the artifact and the clean check result and STOP. Tell me to review and
      `/echo:approve`, and that `/echo:flow <TICKET>` resumes from here. (At `ship`, do NOT run
      step 6: there is no `stage:ship` comment. The ship comment is posted by `/echo:ship` itself,
-     after the PR exists. Once I approve, run the `/echo:ship` flow.)
+     after the PR exists. Once I approve, run the `/echo:ship` flow.) After the ship gate is
+     approved and `/echo:ship` has run, and before the `ship -> done` advance, run the mandatory
+     post-ship watch if no artifact exists yet (`.echo/verify/<TICKET>-ci.md`): run
+     `python3 "${CLAUDE_PLUGIN_ROOT}/bin/echo-watch" run --ticket <TICKET>` (it fails open and
+     always writes the artifact) and post any `post <event-key>` lines as `/echo:watch` step 3
+     does. This is required: `echo-stage next` blocks `ship -> done` under `watch_gate: block`
+     until the watch artifact exists.
    - `auto` -> post the Jira progress comment for this stage (step 6, plain variant), then
      approve and advance without me:
      ```

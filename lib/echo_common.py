@@ -32,6 +32,8 @@ DEFAULT_CONFIG = {
     "plan_guard_override": False,
     "base_branch": "develop",
     "verify_gate": "block",       # block | warn
+    "watch_gate": "block",        # block | warn | off (post-ship CI/review watch)
+    "review_bot_login": "",       # GitHub login whose review comments alert Jira
     "build_driver": "subagent",   # subagent | manual
     "maker_checker": "on",        # on | off
     "maker_checker_max_iters": 2,
@@ -125,6 +127,34 @@ def slugify(text: str, maxlen: int = 60) -> str:
 
 def verify_dir(root: Optional[str] = None) -> str:
     return os.path.join(echo_dir(root), "verify")
+
+
+def watch_artifact_relpath(ticket: str) -> str:
+    """Repo-relative path for the post-ship CI/review watch artifact."""
+    return os.path.join(".echo", "verify", f"{ticket}-ci.md")
+
+
+def watch_artifact_path(ticket: str, root: Optional[str] = None) -> str:
+    return os.path.join(root or repo_root(), watch_artifact_relpath(ticket))
+
+
+def parse_checks(data: list):
+    """Map a parsed `gh pr checks --json bucket,state,name,link` list to a
+    (result, failing_names) tuple. Pure: no network, no subprocess.
+
+    - any check in the `pending` bucket -> ("pending", [failing names])
+    - else any check in the `fail` bucket -> ("fail", [failing names])
+    - else -> ("pass", [])
+    - empty list -> ("pending", []) (a just-opened PR with no checks yet)
+    """
+    if not data:
+        return "pending", []
+    failing = [c.get("name", "") for c in data if c.get("bucket") == "fail"]
+    if any(c.get("bucket") == "pending" for c in data):
+        return "pending", failing
+    if failing:
+        return "fail", failing
+    return "pass", []
 
 
 def review_dir(root: Optional[str] = None) -> str:

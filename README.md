@@ -28,12 +28,13 @@ gate, run it again, it continues. The stage-by-stage commands below still work o
 /echo:verify                             # record proof       (Test)
 /echo:approve  ->  /echo:next
 /echo:ship  -m "..."                     # branch/commit/rebase/push/PR (Ship)
+/echo:watch                              # monitor the PR's CI + reviews (post-ship)
 ```
 `/echo:status` tells you where you are at any time.
 
 ## What's inside
 - **Commands** (`/echo:*`): flow, research, status, intent, approve, next, spec, plan, build,
-  verify, review, ship, install-hooks.
+  verify, review, ship, watch, install-hooks.
 - **Orchestrator**: `/echo:flow <ticket> <goal>` drives the loop from one goal, auto-approving
   stages whose check is clean and stopping only at the gates your `autonomy` setting keeps.
   A failed check always stops. It never adds a gate; it just automates the mechanical steps.
@@ -59,6 +60,14 @@ gate, run it again, it continues. The stage-by-stage commands below still work o
   `.echo/jira/`) decides whether a comment is due and records it, so nothing is duplicated. It
   fails open: no ticket, no MCP, or a post error leaves the loop unchanged and posts nothing, and
   echo never changes the Jira status field.
+- **Post-ship watch (mandatory)**: after `/echo:ship` opens a PR, `/echo:watch` (also run by
+  `/echo:ship` and `/echo:flow`) runs `bin/echo-watch`, which polls the PR's CI checks to a
+  resolved state (a short bounded poll, not a daemon), reads its review comments (highlighting
+  the configured `review_bot_login`), and writes `.echo/verify/<ticket>-ci.md`. It posts at most
+  one Jira comment per distinct event (CI failed on a head sha, a new targeted review comment),
+  deduped by the same per-ticket ledger. It fails open: no `gh`/auth/remote/PR records
+  `skipped: <reason>` and posts nothing. The step is enforced in code: `echo-stage next` refuses
+  to advance `ship -> done` unless a watch artifact exists (governed by `watch_gate`).
 - **State** (committed in `.echo/`): `state.json`, `config.json`, `artifacts/`,
   `verify/`, `review/`, `research/`, `jira/`, `recap.md`, `episodes.jsonl`.
 
@@ -70,6 +79,8 @@ gate, run it again, it continues. The stage-by-stage commands below still work o
   "plan_guard_override": false,
   "base_branch": "develop",
   "verify_gate": "block",
+  "watch_gate": "block",
+  "review_bot_login": "",
   "build_driver": "subagent",
   "maker_checker": "on",
   "maker_checker_max_iters": 2,
@@ -79,6 +90,10 @@ gate, run it again, it continues. The stage-by-stage commands below still work o
 ```
 - `plan_guard`: `deny` | `warn` | `off`. Escape hatch: `plan_guard_override: true`.
 - `verify_gate`: `block` (hard) | `warn`.
+- `watch_gate`: `block` (default; `echo-stage next` refuses `ship -> done` without a post-ship
+  watch artifact) | `warn` (advance with a notice) | `off` (disable the check).
+- `review_bot_login`: GitHub login whose PR review comments trigger a Jira alert and are labeled
+  "Claude review" in the watch artifact. Empty (default) lists all comments but posts none.
 - `build_driver`: `subagent` (the `builder` implements the plan) | `manual` (you do).
 - `maker_checker`: `on` | `off`. Runs the Plan/Build checker loop.
 - `autonomy`: how many gates `/echo:flow` stops at. `gated` (every stage) |

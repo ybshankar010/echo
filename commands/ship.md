@@ -32,4 +32,13 @@ Run the Ship stage for the active echo work item: $ARGUMENTS
      ```
      python3 "${CLAUDE_PLUGIN_ROOT}/bin/echo-stage" comment-done --event ship
      ```
-6. Give me the PR link and remind me to `/echo:approve` ship + `/echo:next` to close the loop.
+6. Run the mandatory post-ship watch so CI and review comments are monitored (and so the
+   `ship -> done` advance is not blocked by the watch gate). This fails open and always writes
+   `.echo/verify/<ticket>-ci.md`:
+   ```
+   python3 "${CLAUDE_PLUGIN_ROOT}/bin/echo-watch" run --ticket <active-ticket>
+   ```
+   Surface its result to me (CI pass/fail/pending/skipped and any review comments). For each
+   `post <event-key>\t<summary>` line it prints, post the Jira comment and record it exactly as
+   `/echo:watch` step 3 does (best-effort, fail open; never change Jira status).
+7. Give me the PR link and remind me to `/echo:approve` ship + `/echo:next` to close the loop.

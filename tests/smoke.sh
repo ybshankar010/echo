@@ -61,6 +61,11 @@ test "$("$BIN/echo-stage" comment-needed --event stage:spec)" = "post FEAT-3816"
 test "$("$BIN/echo-stage" comment-needed --event stage:spec)" = "skip"
 test -f .echo/jira/FEAT-3816.json
 
+echo "== watch run fails open with no PR and writes a skipped artifact =="
+"$BIN/echo-watch" run --ticket FEAT-3816
+test -f .echo/verify/FEAT-3816-ci.md
+grep -q "result: skipped" .echo/verify/FEAT-3816-ci.md
+
 echo "== review dir is created by ensure_dirs =="
 PYTHONPATH="$REPO/lib" python3 -c "import echo_common as ec; ec.ensure_dirs('$T'); import os,sys; sys.exit(0 if os.path.isdir(ec.review_dir('$T')) else 1)"
 

@@ -103,6 +103,14 @@ def cmd_next(args):
               f"Review the artifact, then `/echo:approve`.", file=sys.stderr)
         sys.exit(2)
     nxt = ec.next_stage(stage)
+    if stage == "ship" and nxt == "done":
+        mode = ec.load_config().get("watch_gate", "block")
+        if mode != "off" and not os.path.exists(ec.watch_artifact_path(ticket)):
+            if mode == "block":
+                print("echo: cannot advance ship -> done - no post-ship watch recorded. "
+                      "Run `/echo:watch` (or `echo-watch run`) first.", file=sys.stderr)
+                sys.exit(2)
+            print("echo: warning - advancing ship -> done without a watch artifact.", file=sys.stderr)
     item["stage"] = nxt
     item["updated"] = ec.now_iso()
     ec.save_state(state)

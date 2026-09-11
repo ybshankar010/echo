@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""echo-watch - post-ship CI and review monitoring (the determinism layer).
+
+Subcommands:
+  checks   --ticket T [--json] [--watch] [--interval s] [--max-wait s]
+             Resolve the PR, poll its CI checks to a resolved state (bounded),
+             report pass/fail/pending. Exit non-zero on a real CI failure.
+  comments --ticket T [--author LOGIN] [--since ISO] [--json]
+             List the PR's review comments; mark those by the configured author.
+  run      --ticket T [--author LOGIN] [--interval s] [--max-wait s]
+             The mandatory post-ship entry: write the artifact FIRST, fail open
+             when gh/auth/remote/PR is absent, run bounded checks then comments,
+             rewrite the artifact, and print one `post <event-key>\\t<summary>`
+             line per NEW Jira event. Always exits 0.
+
+Never calls the Jira MCP: posting stays in commands/watch.md, matching how
+comment-needed / comment-done split from the markdown post. Standard library
+only; shells out to `gh` for GitHub reads. Never records a diff, token, or
+secret in the artifact or the printed events.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# gh helpers (fail open: a missing/unauthenticated/hung gh never raises)
+# ---------------------------------------------------------------------------
+
+# Per-call wall-clock cap so a single hung gh read (network hang, auth prompt,
+# outage) cannot block the bounded poll forever. The opt-in blocking `--watch`
+# mode passes timeout=None because the user deliberately chose to wait there.
+GH_CALL_TIMEOUT = 30
+
+
+def _gh_available() -> bool:
+    try:
+        r = subprocess.run(["gh", "auth", "status"], capture_output=True,
+                           text=True, timeout=GH_CALL_TIMEOUT)
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _gh(args, cwd, timeout=GH_CALL_TIMEOUT):
+    try:
+        return subprocess.run(["gh", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def _json(text):
+    try:
+        return json.loads(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def _validate_ticket(ticket):
+    """Reject a malformed ticket before it reaches a filesystem path. Matches
+    echo-stage cmd_init: an invalid id is a hard exit 2, never a traversal."""
+    if not ec.TICKET_RE.fullmatch(ticket):
+        print(f"echo-watch: '{ticket}' is not a valid Jira ticket id ([A-Z]+-[0-9]+).",
+              file=sys.stderr)
+        sys.exit(2)
+
+
+def _validate_poll(args):
+    """Reject a non-positive interval/max-wait so a 0 or negative value cannot
+    drive a busy loop."""
+    if args.interval <= 0 or args.max_wait <= 0:
+        print("echo-watch: --interval and --max-wait must be positive.", file=sys.stderr)
+        sys.exit(2)
+
+
+def _has_remote(cwd) -> bool:
+    out = ec.git("remote", cwd=cwd)
+    return bool((out.stdout or "").strip())
+
+
+def resolve_pr(cwd):
+    """Return {number, url, headRefOid} for the branch's open PR, or None."""
+    r = _gh(["pr", "view", "--json", "number,url,headRefOid"], cwd)
+    if r is None or r.returncode != 0:
+        return None
+    data = _json(r.stdout)
+    if not isinstance(data, dict) or "number" not in data:
+        return None
+    return data
+
+
+# ---------------------------------------------------------------------------
+# CI checks
+# ---------------------------------------------------------------------------
+
+def poll_checks(number, cwd, interval, max_wait):
+    """Poll `gh pr checks` until not pending or max_wait elapses. Returns
+    (result, failing_names) via the pure ec.parse_checks. gh exits 8 while
+    checks are pending but still prints the JSON, so the returncode is ignored
+    and only the parsed payload matters."""
+    import time
+    deadline = time.time() + max_wait
+    result, failing = "pending", []
+    while True:
+        # Bound each gh call by the smaller of the fixed cap and the time left,
+        # so one hung read can never overrun max_wait.
+        call_timeout = max(1, min(GH_CALL_TIMEOUT, deadline - time.time()))
+        r = _gh(["pr", "checks", str(number), "--json", "bucket,state,name,link"],
+                cwd, timeout=call_timeout)
+        data = _json(r.stdout) if r is not None else None
+        result, failing = ec.parse_checks(data if isinstance(data, list) else [])
+        if result != "pending" or time.time() >= deadline:
+            return result, failing
+        time.sleep(interval)
+
+
+# ---------------------------------------------------------------------------
+# Review comments
+# ---------------------------------------------------------------------------
+
+def _one_line(body: str, maxlen: int = 200) -> str:
+    text = " ".join((body or "").split())
+    return text[:maxlen]
+
+
+def read_comments(number, cwd, since=None):
+    """Return a list of {id, author, body, html_url} for the PR's review and
+    conversation comments. Only the author, a one-line body, and the html_url
+    are kept - never a diff, token, or secret."""
+    seen = set()
+    comments = []
+
+    def _add(cid, author, body, url, created=None):
+        key = cid if cid is not None else url
+        if key in seen:
+            return
+        if since and created and created < since:
+            return
+        seen.add(key)
+        comments.append({
+            "id": cid,
+            "author": author or "",
+            "body": _one_line(body),
+            "html_url": url or "",
+        })
+
+    # Primary: REST review (inline) comments.
+    r = _gh(["api", "repos/{owner}/{repo}/pulls/%d/comments" % number], cwd)
+    data = _json(r.stdout) if r is not None else None
+    if isinstance(data, list):
+        for c in data:
+            if not isinstance(c, dict):
+                continue
+            user = c.get("user") or {}
+            _add(c.get("id"), user.get("login"), c.get("body"),
+                 c.get("html_url"), c.get("created_at"))
+
+    # Supplement: conversation comments and formal reviews.
+    r2 = _gh(["pr", "view", "--json", "comments,latestReviews"], cwd)
+    data2 = _json(r2.stdout) if r2 is not None else None
+    if isinstance(data2, dict):
+        for c in data2.get("comments") or []:
+            if not isinstance(c, dict):
+                continue
+            author = (c.get("author") or {}).get("login")
+            _add(c.get("id"), author, c.get("body"), c.get("url"), c.get("createdAt"))
+        for c in data2.get("latestReviews") or []:
+            if not isinstance(c, dict):
+                continue
+            author = (c.get("author") or {}).get("login")
+            _add(c.get("id"), author, c.get("body"), c.get("url"), c.get("submittedAt"))
+    return comments
+
+
+def _resolve_author(args) -> str:
+    if getattr(args, "author", None):
+        return args.author.strip()
+    return (ec.load_config().get("review_bot_login") or "").strip()
+
+
+# ---------------------------------------------------------------------------
+# Artifact
+# ---------------------------------------------------------------------------
+
+def render_artifact(ticket, info) -> str:
+    lines = [
+        f"# Watch: {ticket} post-ship CI and review",
+        "",
+        f"- ticket: {ticket}",
+        f"- timestamp: {ec.now_iso()}",
+        f"- result: {info.get('result', 'started')}",
+        f"- pr: {info.get('pr', 'none')}",
+    ]
+    if info.get("reason"):
+        lines.append(f"- reason: {info['reason']}")
+    failing = info.get("failing") or []
+    lines.append("- failing_checks: " + (", ".join(failing) if failing else "none"))
+    lines.append("")
+    lines.append("## Review comments")
+    comments = info.get("comments") or []
+    author = info.get("author") or ""
+    if not comments:
+        lines.append("- none")
+    else:
+        for c in comments:
+            label = " (Claude review)" if author and c["author"] == author else ""
+            lines.append(f"- {c['author']}{label}: {c['body']} ({c['html_url']})")
+    return "\n".join(lines) + "\n"
+
+
+def write_artifact(ticket, root, info):
+    path = ec.watch_artifact_path(ticket, root)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_artifact(ticket, info))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+def cmd_checks(args):
+    ticket = args.ticket.strip()
+    _validate_ticket(ticket)
+    _validate_poll(args)
+    root = ec.repo_root()
+    pr = resolve_pr(root)
+    if not pr:
+        print("echo-watch: no open PR for the current branch.", file=sys.stderr)
+        return
+    number = pr["number"]
+    if args.watch:
+        # Opt-in blocking wait: the user chose to wait, so do not cap this call.
+        r = _gh(["pr", "checks", str(number), "--watch", "--fail-fast"], root, timeout=None)
+        sys.exit(r.returncode if r is not None else 0)
+    result, failing = poll_checks(number, root, args.interval, args.max_wait)
+    if args.json:
+        print(json.dumps({"result": result, "failing": failing, "pr": pr.get("url")}))
+    else:
+        print(f"CI: {result}  PR: {pr.get('url')}")
+        if failing:
+            print("failing: " + ", ".join(failing))
+    if result == "fail":
+        sys.exit(1)
+
+
+def cmd_comments(args):
+    _validate_ticket(args.ticket.strip())
+    root = ec.repo_root()
+    pr = resolve_pr(root)
+    if not pr:
+        print("echo-watch: no open PR for the current branch.", file=sys.stderr)
+        return
+    author = _resolve_author(args)
+    comments = read_comments(pr["number"], root, since=args.since)
+    if args.json:
+        print(json.dumps(comments))
+        return
+    if not comments:
+        print("no review comments.")
+        return
+    for c in comments:
+        label = " (Claude review)" if author and c["author"] == author else ""
+        print(f"- {c['author']}{label}: {c['body']} ({c['html_url']})")
+
+
+def cmd_run(args):
+    root = ec.repo_root()
+    ticket = args.ticket.strip()
+    _validate_ticket(ticket)  # before any path use, so `../evil` never writes out
+    _validate_poll(args)
+
+    # (1) Write the artifact FIRST so an interrupted poll never strands the item.
+    write_artifact(ticket, root, {"result": "started", "pr": "pending"})
+
+    # (2) Fail open: no gh, no auth, no remote, or no PR -> record and exit 0.
+    def _skip(reason):
+        write_artifact(ticket, root, {"result": "skipped", "pr": "none", "reason": reason})
+        sys.exit(0)
+
+    if not _gh_available():
+        _skip("gh not available or not authenticated")
+    if not _has_remote(root):
+        _skip("no git remote")
+    pr = resolve_pr(root)
+    if not pr:
+        _skip("no open PR for the branch")
+
+    # (3) Bounded checks then comments.
+    result, failing = poll_checks(pr["number"], root, args.interval, args.max_wait)
+    author = _resolve_author(args)
+    comments = read_comments(pr["number"], root)
+
+    # (4) Rewrite the artifact with the final result.
+    write_artifact(ticket, root, {
+        "result": result,
+        "pr": pr.get("url", "none"),
+        "failing": failing,
+        "comments": comments,
+        "author": author,
+    })
+
+    # (5) Print one `post <event-key>` line per NEW Jira event, deduped by ledger.
+    head_sha = pr.get("headRefOid") or ec.git("rev-parse", "HEAD", cwd=root).stdout.strip()
+    ledger = ec.load_jira_ledger(ticket, root)
+    events = []
+    if result == "fail" and head_sha:
+        key = f"ci:failed:{head_sha}"
+        if key not in ledger:
+            summary = "CI failed: " + (", ".join(failing) if failing else "checks failing")
+            events.append((key, summary))
+    if author:
+        for c in comments:
+            if c["author"] == author and c["id"] is not None:
+                key = f"review:seen:{c['id']}"
+                if key not in ledger:
+                    events.append((key, f"New review comment from {c['author']}"))
+    for key, summary in events:
+        print(f"post {key}\t{summary}")
+    sys.exit(0)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-watch")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pc = sub.add_parser("checks")
+    pc.add_argument("--ticket", required=True)
+    pc.add_argument("--json", action="store_true")
+    pc.add_argument("--watch", action="store_true")
+    pc.add_argument("--interval", type=float, default=15)
+    pc.add_argument("--max-wait", type=float, default=120)
+    pc.set_defaults(func=cmd_checks)
+
+    pm = sub.add_parser("comments")
+    pm.add_argument("--ticket", required=True)
+    pm.add_argument("--author", default=None)
+    pm.add_argument("--since", default=None)
+    pm.add_argument("--json", action="store_true")
+    pm.set_defaults(func=cmd_comments)
+
+    pr = sub.add_parser("run")
+    pr.add_argument("--ticket", required=True)
+    pr.add_argument("--author", default=None)
+    pr.add_argument("--interval", type=float, default=15)
+    pr.add_argument("--max-wait", type=float, default=120)
+    pr.set_defaults(func=cmd_run)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
