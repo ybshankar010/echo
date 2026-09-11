@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+"""echo-verify — run the repo's checks and record a proof artifact.
+
+Usage:
+  echo-verify [--task TASK] [-- <command>]
+
+With an explicit command after `--`, runs exactly that. Otherwise auto-detects the
+stack(s) and runs each detected test command in sequence. Writes
+.echo/verify/<task>.md with the command(s), exit code, and output tail. Exits with
+the aggregate exit code (0 only if every command passed).
+
+TASK defaults to the active item's ticket, else "adhoc".
+"""
+import argparse
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+TAIL_LINES = 40
+
+
+def _task_id(explicit):
+    if explicit:
+        return explicit
+    ticket, item = ec.active_item(ec.load_state())
+    return ticket if ticket else "adhoc"
+
+
+def _run(cmd):
+    proc = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                          cwd=ec.repo_root())
+    out = (proc.stdout or "") + (proc.stderr or "")
+    return proc.returncode, out
+
+
+def _tail(text, n=TAIL_LINES):
+    lines = text.rstrip().splitlines()
+    return "\n".join(lines[-n:])
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-verify")
+    p.add_argument("--task", default=None)
+    p.add_argument("cmd", nargs=argparse.REMAINDER,
+                   help="command after -- to run instead of auto-detect")
+    args = p.parse_args()
+
+    ec.ensure_dirs()
+    task = args.task or _task_id(None)
+
+    # Command(s) to run
+    explicit = args.cmd
+    if explicit and explicit[0] == "--":
+        explicit = explicit[1:]
+    commands = []
+    if explicit:
+        commands = [" ".join(explicit)]
+    else:
+        for s in ec.detect_stacks():
+            if s.get("test"):
+                commands.append(s["test"])
+        if not commands:
+            print("echo-verify: no stack detected and no command given. "
+                  "Pass one after `--`, e.g. `echo-verify -- pytest`.",
+                  file=sys.stderr)
+            sys.exit(2)
+
+    results = []
+    agg = 0
+    for c in commands:
+        code, out = _run(c)
+        results.append((c, code, out))
+        agg = agg or code
+
+    # Write the artifact
+    path = os.path.join(ec.verify_dir(), f"{task}.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(f"# Verify: {task}\n\n")
+        fh.write(f"- ts: {ec.now_iso()}\n")
+        fh.write(f"- exit_code: {agg}\n")
+        fh.write(f"- result: {'PASS' if agg == 0 else 'FAIL'}\n\n")
+        for c, code, out in results:
+            fh.write(f"## `{c}` (exit {code})\n\n```\n{_tail(out)}\n```\n\n")
+
+    status = "PASS" if agg == 0 else "FAIL"
+    print(f"echo-verify: {status} (exit {agg}) — proof at {os.path.relpath(path, ec.repo_root())}")
+    sys.exit(agg)
+
+
+if __name__ == "__main__":
+    main()

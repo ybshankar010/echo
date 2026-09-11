@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# End-to-end smoke test for echo on a fresh temp git repo.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="$REPO/bin"
+T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
+
+cd "$T"
+git init -q
+git config user.email t@t.co
+git config user.name t
+
+echo "== init =="
+"$BIN/echo-stage" init --ticket FEAT-3816 --title "smoke"
+
+echo "== next blocks (gate pending) =="
+if "$BIN/echo-stage" next; then echo "FAIL: next should block"; exit 1; fi
+
+echo "== approve + next -> spec =="
+"$BIN/echo-stage" approve
+"$BIN/echo-stage" next | grep -q "advanced:spec"
+
+echo "== artifacts are ticket-scoped =="
+"$BIN/echo-stage" set-artifact --stage spec | grep -q ".echo/artifacts/FEAT-3816/spec.md"
+test -d .echo/artifacts/FEAT-3816
+
+echo "== install commit-msg hook =="
+"$BIN/echo-install-hooks"
+
+echo "== verify (passing) writes artifact =="
+"$BIN/echo-verify" -- true
+test -f .echo/verify/FEAT-3816.md
+
+echo "== ship dry-run enforces ticket =="
+"$BIN/echo-git" ship -m "smoke ship" --desc smoke --dry-run | grep -q "Ticket: FEAT-3816"
+
+echo "== build stage assets present =="
+test -f "$REPO/commands/build.md"
+test -f "$REPO/agents/builder.md"
+test -f "$REPO/agents/critic.md"
+
+echo "== research assets present =="
+test -f "$REPO/commands/research.md"
+test -f "$REPO/agents/researcher.md"
+test -f "$REPO/skills/research-template/SKILL.md"
+
+echo "== research-path resolves (topic + ticket) =="
+"$BIN/echo-stage" research-path --topic "smoke topic" | grep -q ".echo/research/smoke-topic.md"
+"$BIN/echo-stage" research-path --ticket FEAT-3816 | grep -q ".echo/artifacts/FEAT-3816/research.md"
+
+echo "== flow orchestrator present + gate-mode works =="
+test -f "$REPO/commands/flow.md"
+test "$("$BIN/echo-stage" gate-mode --stage plan)" = "stop"
+test "$("$BIN/echo-stage" gate-mode --stage spec)" = "auto"
+
+echo "== jira comment gate round trip (needed -> done -> needed) =="
+test "$("$BIN/echo-stage" comment-needed --event stage:spec)" = "post FEAT-3816"
+"$BIN/echo-stage" comment-done --event stage:spec
+test "$("$BIN/echo-stage" comment-needed --event stage:spec)" = "skip"
+test -f .echo/jira/FEAT-3816.json
+
+echo "== review dir is created by ensure_dirs =="
+PYTHONPATH="$REPO/lib" python3 -c "import echo_common as ec; ec.ensure_dirs('$T'); import os,sys; sys.exit(0 if os.path.isdir(ec.review_dir('$T')) else 1)"
+
+echo "ALL SMOKE CHECKS PASSED"

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "jira_required": true,
+  "plan_guard": "deny",
+  "plan_guard_override": false,
+  "base_branch": "develop",
+  "verify_gate": "block"
+}

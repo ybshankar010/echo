@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""echo-recall — SessionStart / PostCompact hook.
+
+Prints a compact orientation block to stdout (which Claude Code injects as
+context): the active item, its stage and gate, the latest artifact, and the last
+recap. Silent (no output, exit 0) when echo is not initialized in the repo.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+RECAP_MAX = 1500  # chars of recap to echo back
+
+
+def main():
+    # Drain any hook payload on stdin.
+    try:
+        if not sys.stdin.isatty():
+            sys.stdin.read()
+    except Exception:
+        pass
+
+    state = ec.load_state()
+    if state is None:
+        sys.exit(0)
+
+    ticket, item = ec.active_item(state)
+    lines = ["## echo — where you are"]
+    if not item:
+        lines.append("No active work item. Start with `/echo:intent`.")
+        print("\n".join(lines))
+        sys.exit(0)
+
+    stage = item.get("stage")
+    gate = item.get("gates", {}).get(stage, "n/a")
+    lines.append(f"- Active: **{ticket}** — {item.get('title', '')}")
+    lines.append(f"- Stage: **{stage}** (gate: {gate})")
+    if stage == "done":
+        lines.append("- Next: loop complete.")
+    elif gate != "approved":
+        lines.append(f"- Next: review the {stage} artifact, then `/echo:approve`.")
+    else:
+        lines.append(f"- Next: `/echo:next` to advance to '{ec.next_stage(stage)}'.")
+
+    # Latest artifact
+    arts = item.get("artifacts", {})
+    latest = None
+    for s in ("plan", "spec", "intent"):
+        if arts.get(s):
+            latest = arts[s]
+            break
+    if latest:
+        lines.append(f"- Latest artifact: `{latest}`")
+
+    # Last recap
+    rp = ec.recap_path()
+    if os.path.exists(rp):
+        try:
+            with open(rp, "r", encoding="utf-8") as fh:
+                recap = fh.read().strip()
+            if recap:
+                lines.append("\n### Last recap\n" + recap[:RECAP_MAX])
+        except OSError:
+            pass
+
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    main()

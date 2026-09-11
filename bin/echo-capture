@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""echo-capture — Stop / SessionEnd hook.
+
+Writes durable, git-derived working + episodic memory:
+  - .echo/recap.md         a short "where we are" snapshot (overwritten)
+  - .echo/episodes.jsonl   one appended line per capture (facts only)
+
+No model text is invented here — everything is read from state + git, so the
+memory is grounded. Silent when echo is not initialized.
+"""
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+def _changed_files():
+    out = ec.git("status", "--porcelain")
+    if getattr(out, "returncode", 1) != 0:
+        return []
+    files = []
+    for line in (out.stdout or "").splitlines():
+        if line.strip():
+            files.append(line[3:].strip())
+    return files[:50]
+
+
+def _last_commit():
+    out = ec.git("log", "-1", "--pretty=%h %s")
+    if getattr(out, "returncode", 1) == 0:
+        return (out.stdout or "").strip()
+    return ""
+
+
+def main():
+    try:
+        if not sys.stdin.isatty():
+            sys.stdin.read()
+    except Exception:
+        pass
+
+    state = ec.load_state()
+    if state is None:
+        sys.exit(0)
+
+    ec.ensure_dirs()
+    ticket, item = ec.active_item(state)
+    branch = ec.current_branch()
+    changed = _changed_files()
+    commit = _last_commit()
+    stage = item.get("stage") if item else None
+
+    episode = {
+        "ts": ec.now_iso(),
+        "ticket": ticket,
+        "stage": stage,
+        "branch": branch,
+        "last_commit": commit,
+        "changed": changed,
+    }
+    with open(ec.episodes_path(), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(episode) + "\n")
+
+    # Recap snapshot
+    with open(ec.recap_path(), "w", encoding="utf-8") as fh:
+        fh.write("<!-- echo:auto — regenerated each session Stop -->\n")
+        fh.write(f"- Updated: {episode['ts']}\n")
+        if ticket:
+            gate = item.get("gates", {}).get(stage, "n/a")
+            fh.write(f"- Item: {ticket} — {item.get('title','')}\n")
+            fh.write(f"- Stage: {stage} (gate: {gate})\n")
+        fh.write(f"- Branch: {branch or '(none)'}\n")
+        if commit:
+            fh.write(f"- Last commit: {commit}\n")
+        if changed:
+            fh.write(f"- Uncommitted changes ({len(changed)}): "
+                     + ", ".join(changed[:10])
+                     + (" ..." if len(changed) > 10 else "") + "\n")
+        else:
+            fh.write("- Working tree clean\n")
+
+    # Hooks: stay quiet on stdout to avoid noise; capture is a side effect.
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""echo-git — the Ship stage: branch -> commit -> rebase -> push -> PR.
+
+Usage:
+  echo-git ship --message "..." [--title "..."] [--desc slug]
+                [--ticket T] [--base develop] [--staged] [--dry-run]
+
+Enforces the organization Jira policy: every commit and PR carries a ticket id
+([A-Z]+-[0-9]+). Never fabricates a ticket. Pauses (non-zero, no auto-resolve) on
+rebase conflicts. Requires `gh` for PR creation; if absent/unauthenticated it
+stops after push and prints the manual command.
+"""
+import argparse
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+TRAILER = "Co-Authored-By: Claude <noreply@anthropic.com>"
+
+
+def sh(cmd, dry, cwd=None):
+    print(("DRY " if dry else "RUN ") + "$ " + " ".join(cmd))
+    if dry:
+        return 0, ""
+    proc = subprocess.run(cmd, cwd=cwd or ec.repo_root(),
+                          capture_output=True, text=True)
+    if proc.stdout:
+        print(proc.stdout.rstrip())
+    if proc.stderr:
+        print(proc.stderr.rstrip(), file=sys.stderr)
+    return proc.returncode, (proc.stdout or "")
+
+
+def resolve_ticket(args):
+    if args.ticket:
+        t = args.ticket.strip()
+    else:
+        t = ec.ticket_from_branch()
+        if not t:
+            tk, _ = ec.active_item(ec.load_state())
+            t = tk
+    if not t or not ec.TICKET_RE.search(t):
+        print("echo-git: no Jira ticket id found (branch, --ticket, or active "
+              "item). Ticket ids are mandatory per organization policy.",
+              file=sys.stderr)
+        sys.exit(2)
+    return ec.TICKET_RE.search(t).group(0)
+
+
+def slugify(text):
+    s = "".join(c.lower() if c.isalnum() else "-" for c in text)
+    return "-".join(filter(None, s.split("-")))[:40]
+
+
+def cmd_ship(args):
+    cfg = ec.load_config()
+    base = args.base or cfg.get("base_branch", "develop")
+    dry = args.dry_run
+    ticket = resolve_ticket(args)
+
+    if ec.git("rev-parse", "--is-inside-work-tree").returncode != 0:
+        print("echo-git: not a git repository.", file=sys.stderr)
+        sys.exit(2)
+
+    branch = ec.current_branch()
+    if branch in ("", base, "main", "master"):
+        slug = slugify(args.desc or args.message or "change")
+        newb = f"{ticket}/{slug}"
+        code, _ = sh(["git", "checkout", "-b", newb], dry)
+        if code != 0 and not dry:
+            sys.exit(code)
+        branch = newb
+
+    # Stage
+    add = ["git", "add"]
+    add += ["-u"] if args.staged else ["-A"]
+    sh(add, dry)
+
+    # Commit
+    commit_msg = f"{ticket}: {args.message}\n\n{TRAILER}"
+    code, _ = sh(["git", "commit", "-m", commit_msg], dry)
+    if code != 0 and not dry:
+        print("echo-git: commit failed (nothing staged, or hook rejected).",
+              file=sys.stderr)
+        sys.exit(code)
+
+    # Rebase onto base
+    sh(["git", "fetch", "origin"], dry)
+    resolved_base = f"origin/{base}"
+    if not dry and ec.git("rev-parse", "--verify", resolved_base).returncode != 0:
+        for alt in ("main", "master"):
+            if ec.git("rev-parse", "--verify", f"origin/{alt}").returncode == 0:
+                resolved_base = f"origin/{alt}"
+                break
+    code, _ = sh(["git", "rebase", resolved_base], dry)
+    if code != 0 and not dry:
+        print("\necho-git: REBASE CONFLICT — pausing per policy. Conflicts:",
+              file=sys.stderr)
+        st = ec.git("diff", "--name-only", "--diff-filter=U")
+        print(st.stdout, file=sys.stderr)
+        print("Resolve manually, `git rebase --continue`, then re-run "
+              "`echo-git ship`. (Or `git rebase --abort`.)", file=sys.stderr)
+        sys.exit(code)
+
+    # Push
+    code, _ = sh(["git", "push", "-u", "origin", branch], dry)
+    if code != 0 and not dry:
+        sys.exit(code)
+
+    # PR via gh
+    title = args.title or args.message
+    pr_title = f"{ticket}: {title}"
+    pr_body = f"Ticket: {ticket}\n\n{args.message}\n\n{TRAILER}"
+    if not _has_gh():
+        print("\necho-git: `gh` not available/authenticated. Pushed. Create the PR:")
+        print(f'  gh pr create --base {base} --title "{pr_title}" '
+              f'--body "Ticket: {ticket} ..."')
+        return
+    code, _ = sh(["gh", "pr", "create", "--base", base,
+                  "--title", pr_title, "--body", pr_body], dry)
+    if code != 0 and not dry:
+        # Maybe a PR already exists; try to view it.
+        sh(["gh", "pr", "view", "--web"], dry)
+    print(f"\necho-git: shipped {ticket} on branch {branch}.")
+
+
+def _has_gh():
+    try:
+        r = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-git")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    ps = sub.add_parser("ship")
+    ps.add_argument("--message", "-m", required=True)
+    ps.add_argument("--title", default=None)
+    ps.add_argument("--desc", default=None, help="slug for a new branch name")
+    ps.add_argument("--ticket", default=None)
+    ps.add_argument("--base", default=None)
+    ps.add_argument("--staged", action="store_true", help="commit only staged files")
+    ps.add_argument("--dry-run", action="store_true")
+    ps.set_defaults(func=cmd_ship)
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

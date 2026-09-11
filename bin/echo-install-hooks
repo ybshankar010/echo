@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""echo-install-hooks — install a repo-local commit-msg git hook that blocks any
+commit whose message lacks a Jira ticket id ([A-Z]+-[0-9]+).
+
+Idempotent and safe: only creates the hook if absent, or overwrites one that
+carries the `# echo-managed` marker. Never clobbers a hand-written hook.
+Respects .echo/config.json `jira_required: false` (installs a no-op note instead).
+"""
+import os
+import stat
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+MARKER = "# echo-managed"
+
+HOOK = f"""#!/bin/sh
+{MARKER}
+# Block commits without a Jira ticket id (organization policy). Bypass: --no-verify.
+msg_file="$1"
+if ! grep -Eq '[A-Z]+-[0-9]+' "$msg_file"; then
+  echo "BLOCKED by echo: commit message needs a Jira ticket id (e.g. FEAT-3816)." >&2
+  echo "Format: 'TICKET-ID: description'" >&2
+  exit 1
+fi
+exit 0
+"""
+
+
+def main():
+    root = ec.repo_root()
+    git_dir = os.path.join(root, ".git")
+    if not os.path.isdir(git_dir):
+        # Support worktrees / gitdir files minimally.
+        print("echo-install-hooks: no .git directory found at repo root.",
+              file=sys.stderr)
+        sys.exit(2)
+
+    hooks_dir = os.path.join(git_dir, "hooks")
+    os.makedirs(hooks_dir, exist_ok=True)
+    target = os.path.join(hooks_dir, "commit-msg")
+
+    if os.path.exists(target):
+        with open(target, "r", encoding="utf-8") as fh:
+            existing = fh.read()
+        if MARKER not in existing:
+            print(f"echo-install-hooks: {target} exists and is not echo-managed; "
+                  "leaving it untouched.", file=sys.stderr)
+            sys.exit(1)
+
+    with open(target, "w", encoding="utf-8") as fh:
+        fh.write(HOOK)
+    st = os.stat(target)
+    os.chmod(target, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    print(f"echo-install-hooks: installed commit-msg ticket gate at {target}")
+
+
+if __name__ == "__main__":
+    main()

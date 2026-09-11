@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""echo-verify-gate — Stop hook. Hard-block the session from stopping until a
+fresh passing verification artifact exists for the active item.
+
+Fails OPEN: if echo is not initialized, there is no active item, the active item
+is not in a stage where verification is expected (before `test`), or config sets
+verify_gate != block, it allows the stop silently.
+
+Blocks by exiting 2 with a message naming the verify command.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+def _read_stdin():
+    try:
+        if not sys.stdin.isatty():
+            sys.stdin.read()
+    except Exception:
+        pass
+
+
+def main():
+    _read_stdin()  # drain hook payload; we don't need its fields
+
+    state = ec.load_state()
+    if state is None:
+        sys.exit(0)  # not an echo repo -> fail open
+
+    cfg = ec.load_config()
+    if cfg.get("verify_gate") != "block":
+        sys.exit(0)
+
+    ticket, item = ec.active_item(state)
+    if not item:
+        sys.exit(0)
+
+    # Only enforce once the item has reached the test stage (or beyond).
+    stage = item.get("stage")
+    if stage not in ("test", "ship"):
+        sys.exit(0)
+
+    path = os.path.join(ec.verify_dir(), f"{ticket}.md")
+    passed = False
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    if line.strip().startswith("- exit_code:"):
+                        passed = line.split(":", 1)[1].strip() == "0"
+                        break
+        except OSError:
+            passed = False
+
+    if passed:
+        sys.exit(0)
+
+    print(f"BLOCKED by echo: {ticket} has no fresh passing verification. "
+          f"Run `/echo:verify` (or `echo-verify`) and make it green before stopping.",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

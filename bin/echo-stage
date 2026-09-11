@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""echo-stage — the SDLC state machine over .echo/state.json.
+
+Subcommands:
+  init  --ticket T --title "..."   Create/activate a work item at stage=intent.
+  status                            Print the active item, stage, gates, next action.
+  approve [--stage S]               Flip the current (or named) stage gate to approved.
+  next                              Advance one stage if the current gate is approved.
+  set-artifact --stage S --path P   Record an artifact path for a stage.
+  set-stage --stage S               Force the active item to a stage (used by generators).
+
+Determinism only: this never generates artifact content. `next` prints, on stdout,
+the stage the caller should now generate. Exit code 2 = gate not satisfied.
+"""
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+def _require_state():
+    state = ec.load_state()
+    if state is None:
+        print("echo: not initialized in this repo. Run `/echo:intent` or "
+              "`echo-stage init --ticket T --title \"...\"`.", file=sys.stderr)
+        sys.exit(2)
+    return state
+
+
+def cmd_init(args):
+    ec.ensure_dirs()
+    state = ec.load_state() or ec.default_state()
+    ticket = args.ticket.strip()
+    if not ec.TICKET_RE.fullmatch(ticket):
+        print(f"echo: '{ticket}' is not a valid Jira ticket id ([A-Z]+-[0-9]+).",
+              file=sys.stderr)
+        sys.exit(2)
+    if ticket not in state["items"]:
+        state["items"][ticket] = ec.new_item(ticket, args.title or ticket)
+    state["active"] = ticket
+    ec.save_state(state)
+    if not os.path.exists(ec.config_path()):
+        ec.save_config(dict(ec.DEFAULT_CONFIG))
+    print(f"echo: active item {ticket} at stage 'intent'. "
+          f"Generate intent.md, then `/echo:approve` and `/echo:next`.")
+
+
+def _fmt_gates(item):
+    return "  ".join(f"{s}:{item['gates'][s]}" for s in ec.GATED_STAGES)
+
+
+def cmd_status(args):
+    state = _require_state()
+    ticket, item = ec.active_item(state)
+    if not item:
+        print("echo: no active item. Run `/echo:intent`.")
+        return
+    stage = item["stage"]
+    gate = item["gates"].get(stage, "n/a")
+    nxt = ec.next_stage(stage)
+    print(f"Active: {ticket} — {item['title']}")
+    print(f"Stage:  {stage}  (gate: {gate})")
+    print(f"Gates:  {_fmt_gates(item)}")
+    print(f"Artifacts: {os.path.dirname(ec.artifact_relpath(ticket, stage))}/")
+    if stage == "done":
+        print("Next:   done — nothing to advance.")
+    elif gate != "approved":
+        print(f"Next:   review the {stage} artifact, then `/echo:approve`.")
+    else:
+        print(f"Next:   `/echo:next` to advance to '{nxt}'.")
+
+
+def cmd_approve(args):
+    state = _require_state()
+    ticket, item = ec.active_item(state)
+    if not item:
+        print("echo: no active item.", file=sys.stderr)
+        sys.exit(2)
+    stage = args.stage or item["stage"]
+    if stage not in ec.GATED_STAGES:
+        print(f"echo: stage '{stage}' has no gate.", file=sys.stderr)
+        sys.exit(2)
+    item["gates"][stage] = "approved"
+    item["updated"] = ec.now_iso()
+    ec.save_state(state)
+    print(f"echo: {ticket} stage '{stage}' approved.")
+
+
+def cmd_next(args):
+    state = _require_state()
+    ticket, item = ec.active_item(state)
+    if not item:
+        print("echo: no active item.", file=sys.stderr)
+        sys.exit(2)
+    stage = item["stage"]
+    if stage == "done":
+        print("echo: already done.")
+        return
+    if item["gates"].get(stage) != "approved":
+        print(f"echo: cannot advance — stage '{stage}' gate is not approved. "
+              f"Review the artifact, then `/echo:approve`.", file=sys.stderr)
+        sys.exit(2)
+    nxt = ec.next_stage(stage)
+    item["stage"] = nxt
+    item["updated"] = ec.now_iso()
+    ec.save_state(state)
+    # Tell the caller (the slash command) what to generate now.
+    print(f"advanced:{nxt}")
+    hints = {
+        "spec": "Generate spec.md from intent.md using the spec-template skill.",
+        "plan": "Generate plan.md from spec.md using the plan-template skill.",
+        "build": "Plan approved. You may now write code (echo-plan-guard unblocks).",
+        "test": "Run `/echo:verify` (verifier subagent) to record a passing artifact.",
+        "ship": "Run `/echo:ship` to branch/commit/rebase/push/PR.",
+        "done": "Loop complete.",
+    }
+    print(hints.get(nxt, ""))
+
+
+def cmd_set_artifact(args):
+    state = _require_state()
+    ticket, item = ec.active_item(state)
+    if not item:
+        sys.exit(2)
+    # Default to the ticket-scoped path so separate work items never collide.
+    path = args.path or ec.artifact_relpath(ticket, args.stage)
+    abspath = path if os.path.isabs(path) else os.path.join(ec.repo_root(), path)
+    os.makedirs(os.path.dirname(abspath), exist_ok=True)
+    item["artifacts"][args.stage] = path
+    item["updated"] = ec.now_iso()
+    ec.save_state(state)
+    print(f"echo: recorded {args.stage} artifact -> {path}")
+
+
+def cmd_set_stage(args):
+    state = _require_state()
+    ticket, item = ec.active_item(state)
+    if not item:
+        sys.exit(2)
+    if args.stage not in ec.STAGES:
+        print(f"echo: unknown stage '{args.stage}'.", file=sys.stderr)
+        sys.exit(2)
+    item["stage"] = args.stage
+    item["updated"] = ec.now_iso()
+    ec.save_state(state)
+    print(f"echo: stage set to '{args.stage}'.")
+
+
+def cmd_research_path(args):
+    # Resolve the deterministic research artifact path. No state required: research
+    # can precede any work item. Prints the repo-relative path and creates its dir.
+    if bool(args.ticket) == bool(args.topic):
+        print("echo: pass exactly one of --ticket or --topic.", file=sys.stderr)
+        sys.exit(2)
+    if args.ticket:
+        ticket = args.ticket.strip()
+        if not ec.TICKET_RE.fullmatch(ticket):
+            print(f"echo: '{ticket}' is not a valid Jira ticket id ([A-Z]+-[0-9]+).",
+                  file=sys.stderr)
+            sys.exit(2)
+        rel = ec.artifact_relpath(ticket, "research")
+    else:
+        rel = os.path.join(".echo", "research", ec.slugify(args.topic) + ".md")
+    os.makedirs(os.path.dirname(os.path.join(ec.repo_root(), rel)), exist_ok=True)
+    print(rel)
+
+
+def cmd_gate_mode(args):
+    # Print `stop` or `auto` for a stage under the configured autonomy level.
+    # Used by /echo:flow to decide whether to pause. Fails safe to `stop`.
+    stage = args.stage
+    if not stage:
+        state = ec.load_state()
+        _, item = ec.active_item(state)
+        if not item:
+            print("stop")  # no active item -> pause rather than run blind
+            return
+        stage = item.get("stage")
+    autonomy = ec.load_config().get("autonomy", "checkpoint")
+    print("stop" if ec.gate_stops(autonomy, stage) else "auto")
+
+
+def cmd_comment_needed(args):
+    # Decide whether a Jira comment is due for <event> on the active item.
+    # Prints `post <ticket>` when the active item has a valid ticket and the
+    # event has not been recorded yet; prints `skip` otherwise. Always exits 0
+    # so a missing state or ledger never blocks the flow (fail open).
+    ticket, item = ec.active_item(ec.load_state())
+    if not item or not (ticket and ec.TICKET_RE.fullmatch(ticket)):
+        print("skip")
+        return
+    ledger = ec.load_jira_ledger(ticket)
+    if args.event in ledger:
+        print("skip")
+    else:
+        print(f"post {ticket}")
+
+
+def cmd_comment_done(args):
+    # Record that <event> was posted for the active item's ticket. No active
+    # ticket -> exit 0 quietly (fail open).
+    ticket, item = ec.active_item(ec.load_state())
+    if not item or not (ticket and ec.TICKET_RE.fullmatch(ticket)):
+        return
+    ledger = ec.load_jira_ledger(ticket)
+    ledger[args.event] = ec.now_iso()
+    ec.save_jira_ledger(ticket, ledger)
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-stage")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pi = sub.add_parser("init")
+    pi.add_argument("--ticket", required=True)
+    pi.add_argument("--title", default="")
+    pi.set_defaults(func=cmd_init)
+
+    sub.add_parser("status").set_defaults(func=cmd_status)
+
+    pa = sub.add_parser("approve")
+    pa.add_argument("--stage", default=None)
+    pa.set_defaults(func=cmd_approve)
+
+    sub.add_parser("next").set_defaults(func=cmd_next)
+
+    ps = sub.add_parser("set-artifact")
+    ps.add_argument("--stage", required=True)
+    ps.add_argument("--path", default=None,
+                    help="explicit path; omit to use the ticket-scoped default")
+    ps.set_defaults(func=cmd_set_artifact)
+
+    pss = sub.add_parser("set-stage")
+    pss.add_argument("--stage", required=True)
+    pss.set_defaults(func=cmd_set_stage)
+
+    prp = sub.add_parser("research-path")
+    prp.add_argument("--ticket", default=None)
+    prp.add_argument("--topic", default=None)
+    prp.set_defaults(func=cmd_research_path)
+
+    pgm = sub.add_parser("gate-mode")
+    pgm.add_argument("--stage", default=None)
+    pgm.set_defaults(func=cmd_gate_mode)
+
+    pcn = sub.add_parser("comment-needed")
+    pcn.add_argument("--event", required=True)
+    pcn.set_defaults(func=cmd_comment_needed)
+
+    pcd = sub.add_parser("comment-done")
+    pcd.add_argument("--event", required=True)
+    pcd.set_defaults(func=cmd_comment_done)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

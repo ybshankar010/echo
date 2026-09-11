@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "active": "FEAT-9999",
+  "items": {
+    "FEAT-3816": {
+      "title": "Build echo plugin",
+      "stage": "test",
+      "gates": {
+        "intent": "approved",
+        "spec": "approved",
+        "plan": "approved",
+        "build": "approved",
+        "test": "pending",
+        "ship": "pending"
+      },
+      "artifacts": {
+        "intent": ".echo/artifacts/FEAT-3816/intent.md",
+        "spec": ".echo/artifacts/FEAT-3816/spec.md",
+        "plan": ".echo/artifacts/FEAT-3816/plan.md"
+      },
+      "created": "2026-09-04T10:43:59Z",
+      "updated": "2026-09-04T10:44:01Z"
+    },
+    "FEAT-9999": {
+      "title": "Post Jira comments as /echo:flow progresses",
+      "stage": "ship",
+      "gates": {
+        "intent": "approved",
+        "spec": "approved",
+        "plan": "approved",
+        "build": "approved",
+        "test": "approved",
+        "ship": "pending"
+      },
+      "artifacts": {
+        "intent": ".echo/artifacts/FEAT-9999/intent.md",
+        "spec": ".echo/artifacts/FEAT-9999/spec.md",
+        "plan": ".echo/artifacts/FEAT-9999/plan.md"
+      },
+      "created": "2026-09-07T15:39:19Z",
+      "updated": "2026-09-07T16:15:15Z"
+    }
+  }
+}

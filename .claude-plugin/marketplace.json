@@ -1,0 +1,14 @@
+{
+  "name": "echo-local",
+  "owner": { "name": "echo-contributor" },
+  "metadata": {
+    "description": "Local single-plugin marketplace for the echo AI-native SDLC plugin."
+  },
+  "plugins": [
+    {
+      "name": "echo",
+      "source": "./",
+      "description": "Personal AI-native SDLC loop: Plan -> Design -> Build -> Test -> Ship with gates, verification, memory, and ticket-enforced git/PR."
+    }
+  ]
+}
