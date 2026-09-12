@@ -122,3 +122,21 @@ additive and does not touch the Claude Code plugin surface. Read
 [`.agents/skills/README.md`](.agents/skills/README.md) for the known limitations first:
 orchestration is prose-driven, gates are advisory, tool restrictions are not enforced by Codex,
 and none of it is verified in a live Codex session.
+
+### Installing into Codex
+Run echo from inside this repo and Codex discovers `.agents/skills/` automatically (repo-scoped).
+To use echo's skills from any project, install them user-globally with the helper, which creates
+per-entry symlinks into your real `~/.agents/skills` and `~/.codex/agents` dirs so echo coexists
+with any other Codex skills you have:
+
+```
+./codex-install.sh                 # symlink echo's skills + agents into your Codex dirs
+./codex-install.sh --dry-run       # preview, write nothing
+./codex-install.sh --enable-agents # also add [agents] enabled = true to ~/.codex/config.toml
+./codex-install.sh --uninstall     # remove only the symlinks it created
+```
+
+Then add echo's CLIs to PATH (`export PATH="$PWD/bin:$PATH"`), run `codex`, and use `/skills` to
+confirm the `echo-*` skills are discovered. The symlinks point back into this repo, so keep it
+checked out on the branch that carries `.agents/`/`.codex/`. Targets can be overridden with the
+`AGENTS_SKILLS_DIR`, `CODEX_AGENTS_DIR`, and `CODEX_CONFIG` env vars.

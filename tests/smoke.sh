@@ -121,4 +121,10 @@ grep -qi "known limitations" "$REPO/README.md"
 echo "== codex phase2: Claude plugin manifests still valid (compat) =="
 python3 -c "import json,sys; json.load(open('$REPO/.claude-plugin/plugin.json')); json.load(open('$REPO/.claude-plugin/marketplace.json'))"
 
+echo "== codex phase2: installer present, executable, valid, dry-run clean =="
+test -x "$REPO/codex-install.sh"
+bash -n "$REPO/codex-install.sh"
+AGENTS_SKILLS_DIR="$T/askills" CODEX_AGENTS_DIR="$T/cagents" "$REPO/codex-install.sh" --dry-run >/dev/null
+test ! -e "$T/askills"   # dry-run must not create anything
+
 echo "ALL SMOKE CHECKS PASSED"
