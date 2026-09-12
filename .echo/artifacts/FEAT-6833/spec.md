@@ -1,4 +1,4 @@
-# Spec: Mandatory post-ship CI and review monitoring
+# Spec: Codex compatibility for the echo plugin
 
 - **Ticket:** FEAT-6833
 - **Stage:** Design
@@ -6,160 +6,117 @@
 - **Status:** draft (awaiting `/echo:approve`)
 
 ## Overview
-Add a post-ship monitoring step to echo: after `/echo:ship` opens a PR, a new stdlib CLI
-`bin/echo-watch` polls the PR's CI checks to a resolved state and reads its review comments
-(highlighting a configured Claude bot author), writes a monitoring artifact, and posts at most
-one Jira comment per distinct event (CI failed, new targeted review comment). It is delivered as
-research Option 2 (a `bin/` determinism script plus a `commands/watch.md` orchestration file,
-matching the `echo-verify` + `/echo:verify` pattern), with no new `STAGES` entry. The step is
-made **mandatory in code**: `echo-stage next` refuses to advance `ship -> done` unless a watch
-artifact was recorded, mirroring the existing `echo-verify-gate` exit-2 gate. `echo-watch` itself
-fails open (missing `gh`/auth/PR never errors) but always writes an artifact so the gate can tell
-"ran and skipped for a real reason" from "never ran".
+Make echo usable from OpenAI Codex via research Phase 1, with zero change to the Claude Code
+plugin surface. Keep `CLAUDE.md` as the single source of truth and expose its content to Codex
+through a relative symlink `AGENTS.md -> CLAUDE.md` (Codex reads only `AGENTS.md` and has no
+`@import`). Add a "Using echo from OpenAI Codex" section to `CLAUDE.md` that documents driving the
+loop through the stdlib `bin/echo-*` CLIs and running `bin/echo-plan-guard` / `bin/echo-verify-gate`
+as manual advisory gates (Codex has no confirmed blocking-hook equivalent). Ship a tiny, testable
+fallback for symlink-hostile checkouts. No `bin/`/`lib/` behavior changes; the full commands->Skills
+and agents->`agents.*` port is Phase 2 (out of scope).
 
 ## Requirements
 Each is testable and traces to the intent.
 
-1. **New CLI `bin/echo-watch`** (executable, `#!/usr/bin/env python3`, stdlib only, imports
-   `echo_common as ec`), with subcommands:
-   - `checks --ticket <T> [--json] [--watch] [--interval <s>] [--max-wait <s>]` — reports CI state.
-   - `comments --ticket <T> [--since <iso>] [--author <login>] [--json]` — reports review comments.
-   - `run --ticket <T>` — the mandatory post-ship entry: runs checks (bounded) then comments,
-     writes the artifact, posts due Jira comments. This is what `/echo:ship` and `/echo:flow` call.
-   (Intent: "standalone stdlib `bin/echo-watch` CLI".)
-2. **CI read path.** `checks` shells out to `gh pr checks <pr> --json bucket,state,name,link`
-   (fields confirmed via `gh pr checks --json`). Exit code 8 = pending (documented). Default mode
-   is a **short bounded poll**: re-poll every `--interval` (default 15s) until all checks leave the
-   pending bucket or `--max-wait` (default 120s) elapses, then record the current result (which may
-   be `pending`). `--watch` may instead delegate to the blocking `gh pr checks --watch --fail-fast`
-   for a deliberate long wait. The default max-wait is kept well under the calling harness's Bash
-   timeout ceiling (600s) so a synchronous `run` from `/echo:ship` is never killed mid-poll; longer
-   CI is handled by re-running `/echo:watch` (or `--watch` out-of-band), not by a longer default.
-   It must never block unbounded. (Intent: bounded, not a daemon; resolves critic timeout concern.)
-3. **Review-comment read path.** `comments` uses `gh api repos/{owner}/{repo}/pulls/{n}/comments`
-   (REST review comments) as primary; `gh pr view --json comments,latestReviews` supplements
-   conversation-level and formal reviews. The GitHub MCP `pull_request_read` is documented as a
-   fallback but the shipped script shells out to `gh` only (self-contained, stdlib). (Intent open
-   question "Review-comment read path", resolved to `gh api` primary.)
-4. **Claude-author identification.** The author to highlight is configurable: `--author <login>`,
-   else `.echo/config.json` key `review_bot_login`, else unset. When set, only comments by that
-   login drive a Jira post and are labeled "Claude review" in the artifact; all comments are still
-   listed in the artifact. When unset, the artifact lists all review comments and **no**
-   author-triggered Jira comment is posted (avoids matching a wrong login or flooding Jira).
-   (Intent open question "Identifying a Claude comment", resolved: configurable, fail open.)
-5. **Artifact always written, and written first.** `run` writes `.echo/verify/<ticket>-ci.md` via
-   a new `ec.watch_artifact(ticket)` helper (reusing `verify_dir()` at `lib/echo_common.py:126-131`)
-   BEFORE the poll begins (status `started`/`pending`), then updates it in place with the final
-   result. Writing first guarantees the artifact exists even if the calling turn is killed mid-poll,
-   so the mandatory gate (req 6) can never strand an item at `ship` merely because a poll was
-   interrupted. The artifact records: timestamp, PR number/url (or "none"), CI result
-   (`pass`/`fail`/`pending`/`skipped`), failing check names, and the review comments found (author +
-   short body + html_url). On fail-open paths it records `skipped: <reason>` and exits 0.
-   (Intent: "writes a monitoring artifact under `.echo/`".)
-6. **Mandatory gate (code-enforced at the advance).** `echo-stage next` refuses to advance an item
-   from `ship` to `done` unless a watch artifact exists for that ticket, governed by a new config
-   key `watch_gate` (`block` default | `warn` | `off`). `block` prints how to run `/echo:watch` and
-   exits non-zero without advancing; `warn` advances with a notice; `off` disables the check. The
-   gate FAILS OPEN when it cannot map an active item (never bricks a repo), per `CLAUDE.md`
-   Conventions. Scope note (correcting an earlier overclaim): this is enforced at the `ship -> done`
-   advance inside `echo-stage next`, NOT as a Stop hook. Unlike `echo-verify-gate` (a SessionStop
-   hook wired in `hooks/hooks.json` that blocks the session from ending), this gate does not stop a
-   session from ending at `ship`; it blocks completing the loop. That is sufficient for "mandatory"
-   because an item cannot reach `done` without a recorded watch. A SessionStop-hook analog
-   (`echo-watch-gate`) for true session-level parity is a deliberate NON-goal for this ticket (see
-   Non-goals); it can be added later if session-level blocking is wanted. It reuses `verify_gate`'s
-   style (fail-open, config-gated, exit non-zero) but not its hook mechanism. (Intent: "code-level
-   check ... refuses `ship -> done`".)
-7. **Jira comments, ledger-deduped with per-occurrence keys.** Reuse the existing ledger
-   (`comment-needed`/`comment-done`, `lib/echo_common.py:213-231`) but with **parameterized** event
-   keys so a genuinely new event still alerts while the same event never double-posts:
-   - Review comments: one post per comment, keyed `review:seen:<comment-id>` (the GitHub review
-     comment id). A second, different comment (different id) alerts; the same id never re-posts.
-   - CI failure: keyed by the failing head commit sha, `ci:failed:<head-sha>`, so a fresh failure on
-     a new commit re-alerts, but repeated `run`s over the same failing sha post once. (A prior pass
-     then a new failure on a new sha is naturally a new key.)
-   This directly resolves the intent's "Duplicate-comment keys" open question (flat `ci:failed` /
-   `review:new` keys were rejected by review because "posted once ever" semantics would silence
-   every later distinct event). Best-effort: any MCP error is swallowed; never post without a valid
-   ticket; never touch Jira status. (Intent: "reusing the existing ledger so it never double-posts".)
-8. **`/echo:ship` invokes the watch.** After a successful real ship (PR opened), `commands/ship.md`
-   runs `echo-watch run --ticket <T>` before telling the user to `/echo:approve` ship. (Intent:
-   "`/echo:ship` invokes it once the PR exists".)
-9. **`/echo:flow` invokes the watch.** After the ship gate is approved and `/echo:ship` has run,
-   `/echo:flow` runs `echo-watch run` (if not already recorded) before the ship->done advance, so
-   the mandatory step holds inside the orchestrator too. (Intent: "`/echo:flow` always runs it".)
-10. **New command `commands/watch.md`** (`/echo:watch`) orchestrates `echo-watch run` and prints
-    the artifact location, matching the thin-orchestration style of `commands/verify.md`.
-11. **Fail open on infrastructure.** No `gh` binary, `gh auth status` failing, no git remote, or
-    no open PR for the branch: `echo-watch` records `skipped: <reason>`, posts nothing, exits 0.
-    (Intent: "fails open ... never fabricates a status".)
+1. **`AGENTS.md` symlink.** Create `AGENTS.md` at repo root as a relative symlink to `CLAUDE.md`.
+   Reading `AGENTS.md` returns `CLAUDE.md`'s content; git tracks it as a symlink (mode 120000).
+   (Intent: single source of truth via symlink.)
+2. **Codex how-to in `CLAUDE.md`.** Add a section "Using echo from OpenAI Codex" that states:
+   (a) Codex reads `AGENTS.md`, which is a symlink to this file; (b) the loop is driven by calling
+   `bin/echo-*` directly - a concrete command sequence: `echo-stage init --ticket <T> --title ...`
+   -> write `intent/spec/plan` -> `echo-stage approve` / `echo-stage next` -> `echo-build` (manual
+   or subagent) -> `echo-verify` -> `echo-git ship`; (c) under Codex the gates are ADVISORY - run
+   `bin/echo-plan-guard` before editing source and `bin/echo-verify-gate` before ending a turn,
+   manually, since Codex has no blocking hook; (d) Jira progress comments are Claude-only (no
+   Atlassian MCP wired for Codex), so those steps are skipped. Because `AGENTS.md` symlinks to
+   `CLAUDE.md`, this section reaches Codex automatically. (Intent: Codex how-to, manual gates,
+   no MCP.)
+3. **Symlink-hostile fallback (testable, no drift).** Provide a documented, repeatable way to
+   materialize `AGENTS.md` as a real file where symlinks do not survive (Windows checkouts,
+   `git archive`): a one-line `cp CLAUDE.md AGENTS.md`, documented in the Codex section with an
+   explicit note that it must be re-run whenever `CLAUDE.md` changes (or wired into a local hook).
+   No new `bin/` script in this build (keeps scope tight); the symlink is the default. (Intent
+   open question: symlink vs generated; leaning symlink default + documented cp fallback.)
+4. **No Claude Code regression.** `CLAUDE.md` content is unchanged except the appended Codex
+   section; `commands/`, `agents/`, `skills/`, `hooks/`, `bin/`, `lib/` behavior is untouched.
+   Existing unit + smoke suites stay green. (Intent: Claude Code users unaffected.)
+5. **Core runs under Codex unchanged.** No code change to `bin/echo-*` or `lib/echo_common.py`
+   (already stdlib, confirmed). `py_compile` stays clean. (Intent: core runs unchanged.)
+6. **Tests cover the new surface.** Add smoke checks (all `$REPO`-qualified, since smoke.sh runs
+   inside a temp repo) that `$REPO/AGENTS.md` is a symlink resolving to `CLAUDE.md`, and that
+   `$REPO/CLAUDE.md`'s Codex section contains its required substance (the `echo-stage`/`echo-verify`
+   sequence, the `echo-plan-guard`/`echo-verify-gate` advisory-gate names, and the no-Jira-on-Codex
+   note) - not merely the heading. (Intent: How we know it worked.)
 
 ## Design
-- **Components:** `bin/echo-watch` (new), `commands/watch.md` (new); edits to `commands/ship.md`,
-  `commands/flow.md`, `bin/echo-stage` (the `next` gate), `lib/echo_common.py` (helpers + config
-  defaults), `README.md` (document the step), `tests/test_echo.py` + `tests/smoke.sh` (coverage).
-- **State/artifact:** `.echo/verify/<ticket>-ci.md` (reuses `verify_dir()`); no schema/`STAGES`
-  change (research Option 2). Ledger events extended with `ci:failed`, `review:new` keys in the
-  existing `.echo/jira/<ticket>.json`.
-- **Config:** add `watch_gate: "block"` and optional `review_bot_login` to config defaults in
-  `lib/echo_common.py` (wherever `verify_gate`/`base_branch` defaults live), so existing repos get
-  the gate on by default but can set `warn`/`off`.
-- **PR resolution:** get the PR number/url for the current branch via `gh pr view --json
-  number,url`. For the review-comments endpoint, use `gh api`'s `{owner}/{repo}` placeholders,
-  which auto-resolve from the current repo's `origin` context (confirmed in `gh api --help`), rather
-  than passing head-repo fields (which name the source/fork repo, not the base repo hosting the
-  PR). If no PR/remote, fail open (req 11).
+- **Files changed:**
+  - `AGENTS.md` (new) - relative symlink to `CLAUDE.md` (`ln -s CLAUDE.md AGENTS.md`).
+  - `CLAUDE.md` (edit) - append the "Using echo from OpenAI Codex" section (req 2 + 3).
+  - `README.md` (edit) - one short pointer that echo is Codex-compatible via `AGENTS.md`, linking
+    the CLAUDE.md section and the research doc.
+  - `tests/smoke.sh` (edit) - assert `AGENTS.md` is a symlink to `CLAUDE.md` and the Codex section
+    exists in `CLAUDE.md`.
+  - Optionally `tests/test_echo.py` - a unit check is not natural here (this is a repo-file/layout
+    concern, not a `lib`/`bin` function), so the smoke test is the primary proof; add a unit test
+    only if a pure helper is introduced (none planned).
+- **No new `bin/`/`lib/` code**, no `.codex/` scaffold, no config changes. The symlink and a
+  documentation section are the whole build.
+- **Reuse:** the existing smoke-test harness (`tests/smoke.sh`) and its temp-repo pattern; no new
+  test infrastructure.
 - **Key decisions (resolving intent open questions):**
-  - CI field: `gh pr checks --json` (confirmed fields `bucket,state,name,link`; documented exit
-    8 = pending). `statusCheckRollup` is also a valid `gh pr view --json` field (verified on gh
-    2.91.0) but `gh pr checks` is chosen for its explicit pending exit code; statusCheckRollup is a
-    future enrichment, not a blocker.
-  - Read path: `gh api` primary, MCP `pull_request_read` documented fallback only.
-  - Claude author: configurable, unset means list-all-but-do-not-post (honest, no wrong-login risk).
-  - Mandatory: enforced at the `ship -> done` advance in `echo-stage next` via `watch_gate`,
-    artifact-existence based (artifact written first, req 5), so fail-open watch and the mandatory
-    gate coexist without contradiction. Not a Stop hook (see req 6 scope note).
-  - Blocking vs bounded: short bounded poll default (`--max-wait` 120s, under the harness ceiling);
-    `--watch` is opt-in blocking.
+  - Symlink is the default mechanism; the cp fallback is documentation only (no new script) to
+    keep scope minimal; a generator/hook can be a later enhancement if drift becomes a problem.
+  - The Codex how-to lives inside `CLAUDE.md` so the symlinked `AGENTS.md` carries it to Codex.
+  - Codex's own symlink handling stays an explicit "verify hands-on" note in the doc, not a
+    blocker (the cp fallback covers the failure case).
 
 ## Flagged concerns
-- **Blocking an agent turn (UX):** a naive `--watch` could stall the conversation until CI
-  finishes. Mitigation: default is a bounded poll with `--max-wait` (req 2); blocking is opt-in.
-- **Jira noise (UX):** re-running the watch could spam comments. Mitigation: ledger dedup on
-  distinct event keys (req 7); unset author posts nothing (req 4).
-- **Security:** never put diffs, tokens, or secrets in Jira or the artifact; store only comment
-  author, short body, and `html_url`. `gh` token stays in `gh`'s keyring; echo never reads it.
-- **Compliance:** Jira status field is never changed (echo policy); comments only. No new
-  third-party dependency (stdlib rule).
-- **Bricking risk:** the new gate must FAIL OPEN when it cannot map the active item, matching every
-  other echo gate (`CLAUDE.md`). Owner sign-off not required; this is within existing policy.
+- **Symlink portability (correctness):** symlinks can break on Windows / `git archive`. Mitigation:
+  the documented cp fallback (req 3); the smoke test only asserts the symlink on the dev platform
+  where it is created.
+- **Advisory gates are weaker (integrity):** under Codex the plan-guard/verify-gate are not
+  enforced. Mitigation: the Codex section states this plainly; it is an accepted owner decision,
+  not hidden. No security/secret exposure (no new data paths, no MCP on Codex).
+- **Drift of a cp-materialized `AGENTS.md`:** a copied file can go stale vs `CLAUDE.md`. Mitigation:
+  the doc says re-run on change; the symlink (default) never drifts.
+- **Compliance:** no third-party dependency added; no em dashes in the new prose; Jira/ticket
+  policy unaffected (this build is on branch `FEAT-6833/codex-compat`).
 
 ## Non-goals
-- A background daemon, cron, or webhook receiver (no substrate in-repo; research Finding 6/Risks).
-- Non-GitHub CI systems (only `gh`/GitHub investigated).
-- Installing or configuring the Claude review bot on the GitHub repo (org config, out of scope).
-- Auto-merging, or reacting to/resolving review comments beyond surfacing them.
-- Adding a new `STAGES` entry or a new SDLC gate/artifact template (research rejects Option 1).
-- A SessionStop-hook analog (`echo-watch-gate`) for session-level blocking (like `echo-verify-gate`)
-  is out of scope for this ticket; the `echo-stage next` advance gate (req 6) is the mandatory
-  enforcement. A Stop hook can be added later if session-level blocking proves needed.
+- Porting `commands/*.md` to Codex Skills or `agents/*.md` to Codex `agents.*` (Phase 2).
+- Wiring any MCP (incl. Atlassian) for the Codex path; no Jira comments under Codex.
+- A Codex-native gate approximation via `approval_policy` / `sandbox_mode`.
+- Cursor / OpenCode / Copilot support, or a `.codex/` skills scaffold.
+- Automated cross-platform symlink handling beyond the documented cp fallback.
 
 ## Acceptance criteria
-1. `python3 -m py_compile lib/echo_common.py bin/echo-*` passes (echo-watch compiles).
-2. `bin/echo-watch` is executable (`100755` tracked) and runs `--help` for each subcommand.
-3. With no git remote / no PR, `echo-watch run --ticket FEAT-6833` exits 0, writes an artifact
-   recording `skipped: <reason>`, and posts nothing (unit test with a temp repo).
-4. `echo-stage next` from `ship` with `watch_gate=block` and no watch artifact exits non-zero and
-   does not advance; with an artifact present it advances to `done`; with `watch_gate=off` it
-   advances regardless (unit tests).
-5. The gate FAILS OPEN (advances/no crash) when there is no active item mappable.
-6. CI parsing maps `gh pr checks --json` output to pass/fail/pending, listing failing check names
-   (unit test against a captured/mocked JSON fixture, not a live call).
-7. Ledger dedup with re-alert: two `echo-watch run` calls over the same failing head-sha post
-   `ci:failed:<sha>` once; a failure on a NEW head-sha posts again; a NEW review comment id posts a
-   `review:seen:<id>` while a repeated id does not (unit tests around `comment-needed`/`comment-done`
-   with the parameterized keys, covering both no-double-post and new-event-still-alerts).
-8. `tests/smoke.sh` gains a line exercising the fail-open no-PR path end to end; existing smoke
-   assertions stay green.
-9. `python3 -m pytest tests/test_echo.py -q` and `bash tests/smoke.sh` both pass.
-10. `README.md` documents the mandatory post-ship watch, the `watch_gate` config, and `/echo:watch`.
+All file checks target the REAL repo path. `tests/smoke.sh` `cd`s into a temp git repo (line 10)
+and qualifies real-repo checks with `$REPO/` (e.g. lines 40-47); the new checks MUST do the same
+(`$REPO/AGENTS.md`, `$REPO/CLAUDE.md`), never bare paths, or they would inspect the temp repo.
+
+1. `test -L "$REPO/AGENTS.md"` is true and `readlink "$REPO/AGENTS.md"` == `CLAUDE.md` (relative).
+2. `cat "$REPO/AGENTS.md"` equals `cat "$REPO/CLAUDE.md"` (read-through). Separately (after the
+   file is committed/staged), `git ls-files -s AGENTS.md` shows mode `120000`.
+3. The Codex section in `$REPO/CLAUDE.md` is present AND has the required substance - each of these
+   greps against `$REPO/CLAUDE.md` succeeds (not just the heading):
+   - `grep -q "Using echo from OpenAI Codex" "$REPO/CLAUDE.md"` (the heading);
+   - `grep -q "echo-stage" "$REPO/CLAUDE.md"` and `grep -q "echo-verify" "$REPO/CLAUDE.md"` (the
+     bin/echo-* driving sequence);
+   - `grep -q "echo-plan-guard" "$REPO/CLAUDE.md"` and `grep -q "echo-verify-gate" "$REPO/CLAUDE.md"`
+     (the manual advisory-gate steps);
+   - `grep -qi "advisory" "$REPO/CLAUDE.md"` (gates are advisory under Codex);
+   - a grep confirming the no-Jira/no-MCP-on-Codex note (e.g. `grep -qi "jira" "$REPO/CLAUDE.md"`
+     within the Codex section, or an equivalent explicit substring the build chooses and the smoke
+     check asserts).
+4. `python3 -m py_compile lib/echo_common.py bin/echo-*` exits 0 (core unchanged).
+5. `python3 -m pytest tests/test_echo.py -q` stays green (was 62 passed; no test weakened).
+6. `bash tests/smoke.sh` exits 0 and includes the new `$REPO/AGENTS.md`-symlink and
+   Codex-section-substance checks from criteria 1-3.
+7. `README.md` mentions Codex compatibility and points to the CLAUDE.md section / research doc.
+8. No changes under `commands/`, `agents/`, `skills/`, `hooks/`, `bin/`, `lib/` (verified by
+   `git diff --name-only` showing only `AGENTS.md`, `CLAUDE.md`, `README.md`, `tests/smoke.sh`,
+   and `.echo/`).
+
+Decision note: the symlink-vs-generator open question is resolved to "symlink default + documented
+cp fallback, no new script" for this build; it is surfaced here so the plan gate can override if the
+human wants a generator instead.

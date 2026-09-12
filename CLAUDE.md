@@ -53,3 +53,47 @@ through echo's own loop instead of editing ad hoc. The active work item lives in
 ## Verifying your work
 - Run the unit tests and smoke test above before reporting done; paste the output.
 - Fix the code, not the tests.
+
+## Using echo from OpenAI Codex
+Codex reads `AGENTS.md`, which is a symlink to this file (`CLAUDE.md`), so this guidance
+reaches Codex automatically. Codex has no `@import`, so keep `CLAUDE.md` the single source of
+truth and let the symlink carry it.
+
+Drive the loop by calling the stdlib `bin/echo-*` CLIs directly (there are no slash commands
+under Codex). The concrete sequence:
+
+1. `bin/echo-stage init --ticket <TICKET> --title "<goal>"` to start the work item.
+2. Write the artifacts by hand under `.echo/artifacts/<TICKET>/`: `intent.md`, then `spec.md`,
+   then `plan.md`. Run `bin/echo-stage set-artifact --stage <stage>` to record each artifact in
+   state (it also creates the ticket-scoped directory).
+3. `bin/echo-stage approve` to clear a gate, then `bin/echo-stage next` to advance the stage.
+   Repeat through spec and plan.
+4. Implement the approved plan (by hand or via a subagent).
+5. `bin/echo-verify -- <your test command>` to record proof.
+6. `bin/echo-git ship -m "<TICKET>: <desc>" --desc <slug>` to branch, commit, and open the PR.
+
+Under Codex the gates are advisory, not enforced: Codex has no confirmed blocking-hook
+equivalent, so nothing stops a source edit or a turn end automatically. Check them yourself:
+
+- Before you edit source, confirm the plan gate is approved. The simplest check is
+  `bin/echo-stage status` (look for `plan:approved`). To run `bin/echo-plan-guard` as a real
+  check you must feed it the file you are about to edit, the way the Claude Code hook does:
+  `echo '{"tool_input":{"file_path":"<path>"}}' | bin/echo-plan-guard` (exit 2 means blocked).
+  A bare `bin/echo-plan-guard` with no input always exits 0, so it is not a real check.
+- Before you end a turn, run `bin/echo-verify-gate` to confirm verification is recorded. This
+  one works when run bare (it reads state and the verify artifact); exit 2 means not yet green.
+
+Honor their result even though they cannot block you the way the Claude Code hooks do.
+
+Note: no Atlassian MCP is wired for Codex, so the Jira progress comments that run under Claude
+Code are skipped here. Post any Jira updates yourself if you want them.
+
+`AGENTS.md` is a relative symlink to `CLAUDE.md` (`ln -s CLAUDE.md AGENTS.md`), so it never
+drifts. For symlink-hostile checkouts (some Windows clones, `git archive` output) where the
+link does not survive, materialize it as a real file with the cp fallback:
+
+```
+cp CLAUDE.md AGENTS.md
+```
+
+Re-run that copy whenever `CLAUDE.md` changes, so the two stay in sync.

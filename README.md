@@ -107,3 +107,9 @@ settings, security scans, org marketplace distribution, DORA dashboards, and the
 Maintain-stage control bands.
 
 See `INSTALL.md` to install locally. Requires Python 3 and (for Ship) `git` + `gh`.
+
+## Codex compatibility
+echo also runs from OpenAI Codex: `AGENTS.md` is a symlink to `CLAUDE.md`, so Codex reads the
+same guidance. See the "Using echo from OpenAI Codex" section in `CLAUDE.md` for how to drive
+the loop via the `bin/echo-*` CLIs, and `.echo/research/adopt-echo-plugin-to-codex.md` for the
+research behind it.

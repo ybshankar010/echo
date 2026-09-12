@@ -69,4 +69,20 @@ grep -q "result: skipped" .echo/verify/FEAT-3816-ci.md
 echo "== review dir is created by ensure_dirs =="
 PYTHONPATH="$REPO/lib" python3 -c "import echo_common as ec; ec.ensure_dirs('$T'); import os,sys; sys.exit(0 if os.path.isdir(ec.review_dir('$T')) else 1)"
 
+echo "== codex: AGENTS.md is a symlink to CLAUDE.md =="
+test -L "$REPO/AGENTS.md"
+test "$(readlink "$REPO/AGENTS.md")" = "CLAUDE.md"
+diff <(cat "$REPO/AGENTS.md") "$REPO/CLAUDE.md" >/dev/null
+
+echo "== codex: CLAUDE.md has the Codex how-to with substance =="
+grep -q "Using echo from OpenAI Codex" "$REPO/CLAUDE.md"
+grep -q "echo-stage" "$REPO/CLAUDE.md"
+grep -q "echo-verify" "$REPO/CLAUDE.md"
+grep -q "echo-plan-guard" "$REPO/CLAUDE.md"
+grep -q "echo-verify-gate" "$REPO/CLAUDE.md"
+grep -qi "advisory" "$REPO/CLAUDE.md"
+# no-Jira/no-MCP note, scoped to the new section so it can't pass on the pre-existing
+# "Jira ticket id" policy text at CLAUDE.md:19 (a whole-file `grep jira` is a false positive):
+sed -n '/## Using echo from OpenAI Codex/,$p' "$REPO/CLAUDE.md" | grep -qi "atlassian mcp"
+
 echo "ALL SMOKE CHECKS PASSED"

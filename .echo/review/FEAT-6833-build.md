@@ -1,46 +1,41 @@
-# Build review: FEAT-6833 — Mandatory post-ship CI and review monitoring
+# Build review: FEAT-6833 — Codex compatibility for the echo plugin
 
 - ts: 2026-09-12
 - stage: build (maker-checker complete)
-- iterations: 2 builder passes, 2 reviewer passes
-- result: CLEAN of important findings
+- iterations: 1 builder pass + a targeted doc fix; 1 reviewer pass
+- result: CLEAN of important findings (after fix)
 
 ## Maker-checker summary
-- Builder (pass 1) implemented the plan: new `bin/echo-watch` (checks/comments/run),
-  `commands/watch.md`, `parse_checks`/`watch_artifact_path`/config keys in `lib/echo_common.py`,
-  the `watch_gate` in `bin/echo-stage` `cmd_next`, and edits to `commands/ship.md`,
-  `commands/flow.md`, `README.md`, plus tests. Proof: 58 passed, smoke green.
-- Reviewer (pass 1) raised two important findings.
-- Builder (pass 2) fixed both plus two minors. Proof: 62 passed, smoke green.
-- Reviewer (pass 2) confirmed both fixed with no regressions.
+- Builder implemented the plan: appended the `## Using echo from OpenAI Codex` section to
+  `CLAUDE.md`, created `AGENTS.md` as a relative symlink to `CLAUDE.md`, added a README pointer,
+  and added `$REPO`-qualified smoke checks. Proof: 62 passed, smoke green, symlink mode 120000.
+- Reviewer raised one important finding + one minor.
+- Fix applied and re-verified.
 
-## Important findings (both CONFIRMED-FIXED)
-1. Unbounded `gh` call could overrun `--max-wait` (a single hung call blocked forever),
-   contradicting the spec's "must never block unbounded". Fixed: `GH_CALL_TIMEOUT = 30`;
-   `_gh`/`_gh_available` pass a per-call `timeout=` and catch `subprocess.TimeoutExpired`
-   returning the gh-failure sentinel; `poll_checks` caps each call at
-   `min(GH_CALL_TIMEOUT, deadline - now)`; the opt-in `--watch` blocking mode is deliberately
-   uncapped (`timeout=None`). Tests: `test_watch_gh_timeout_branch_fails_open`,
-   `test_watch_run_fail_open_on_gh_timeout`.
-2. `--ticket` was not validated (path-traversal write outside `.echo/verify/`). Fixed:
-   `_validate_ticket` (`ec.TICKET_RE.fullmatch`, `sys.exit(2)`) called before any path/ledger
-   use in `cmd_checks`/`cmd_comments`/`cmd_run`. Test: `test_watch_run_rejects_bad_ticket`
-   (asserts exit 2 and nothing written outside `verify/`).
+## Important finding (CONFIRMED, FIXED)
+- The Codex section told a user to run `bin/echo-plan-guard` bare to check the plan gate, but
+  the script short-circuits to exit 0 with no hook payload (`bin/echo-plan-guard:39` `if not
+  path: return True`), so a bare run always reports "clear" even with an unapproved plan -
+  defeating the safeguard the doc described. Confirmed live: `bin/echo-plan-guard < /dev/null` ->
+  exit 0. `echo-verify-gate` is unaffected (works bare).
+  Fix: the section now says to confirm the plan gate via `bin/echo-stage status` (look for
+  `plan:approved`), and to run `echo-plan-guard` as a real check by feeding it the file path the
+  way Claude Code does (`echo '{"tool_input":{"file_path":"<path>"}}' | bin/echo-plan-guard`),
+  with an explicit note that a bare invocation always exits 0 and is not a real check.
 
-## Minors handled
-- `--interval`/`--max-wait` <= 0 rejected (`_validate_poll`, `sys.exit(2)`);
-  test `test_watch_run_rejects_nonpositive_poll`.
-- New-code em dash removed from `bin/echo-watch` and `commands/watch.md`.
+## Minor (FIXED)
+- `set-artifact` was described as "resolve each path"; corrected to say it records the artifact
+  in state and creates the ticket-scoped directory.
 
-## Compliance (re-confirmed clean)
-- Parameterized ledger keys `ci:failed:<sha>` / `review:seen:<id>` (spec §7).
-- `review_bot_login` unset -> list-all, post-none.
-- `watch_gate` at the `ship -> done` advance in `cmd_next`, fail-open.
-- No secrets/tokens/diffs in artifact or Jira; Jira status never changed.
-- Stdlib only; `bin/echo-watch` executable; `run` always exits 0 on the default path.
+## Compliance (clean)
+- Append-only to `CLAUDE.md`; no existing content altered. No em dashes in the new prose.
+- No third-party deps; nothing touched under `commands/agents/skills/hooks/bin/lib`; no secrets.
+- `AGENTS.md` is a relative symlink (mode 120000) resolving to `CLAUDE.md`.
 
 ## Proof (real, verified by main session)
-- `python3 -m py_compile lib/echo_common.py bin/echo-*` -> exit 0
-- `test -x bin/echo-watch` -> executable
-- `python3 -m pytest tests/test_echo.py -q` -> 62 passed (was 45; +17 across the build)
-- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED, exit 0
+- Section substance greps (`echo-stage`, `echo-verify`, `echo-plan-guard`, `echo-verify-gate`,
+  `advisory`, section-scoped `Atlassian MCP`) all pass.
+- `python3 -m pytest tests/test_echo.py -q` -> 62 passed (no test weakened).
+- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED (incl. new codex block).
+- No em dashes added to `CLAUDE.md`/`README.md`.
+- Diff limited to `AGENTS.md`, `CLAUDE.md`, `README.md`, `tests/smoke.sh`, and `.echo/`.
