@@ -113,3 +113,12 @@ echo also runs from OpenAI Codex: `AGENTS.md` is a symlink to `CLAUDE.md`, so Co
 same guidance. See the "Using echo from OpenAI Codex" section in `CLAUDE.md` for how to drive
 the loop via the `bin/echo-*` CLIs, and `.echo/research/adopt-echo-plugin-to-codex.md` for the
 research behind it.
+
+For Codex, the commands are also ported to Skills under `.agents/skills/`: one
+`echo-<name>/SKILL.md` per command (flow, research, intent, spec, plan, build, verify, review,
+ship, status, approve, next, watch), plus the four template skills. The agent roles are ported
+to TOMLs under `.codex/agents/` (builder, critic, reviewer, verifier, researcher). This port is
+additive and does not touch the Claude Code plugin surface. Read
+[`.agents/skills/README.md`](.agents/skills/README.md) for the known limitations first:
+orchestration is prose-driven, gates are advisory, tool restrictions are not enforced by Codex,
+and none of it is verified in a live Codex session.

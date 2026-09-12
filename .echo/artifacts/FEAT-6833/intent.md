@@ -1,4 +1,4 @@
-# Intent: Codex compatibility for the echo plugin
+# Intent: Codex compatibility Phase 2 (commands to Skills, agents to agents.*)
 
 - **Ticket:** FEAT-6833
 - **Stage:** Plan
@@ -6,74 +6,85 @@
 - **Status:** draft (awaiting `/echo:approve`)
 
 ## Problem
-echo is a Claude Code plugin: its loop is driven by Claude-Code-specific glue (slash
-`commands/*.md`, Task-tool `agents/*.md`, `skills/*/SKILL.md`, and `hooks/hooks.json`). A user
-who works in OpenAI Codex today gets none of it. But research
-(`.echo/research/adopt-echo-plugin-to-codex.md`) established that echo's determinism (all
-`bin/echo-*` + `lib/echo_common.py`) is pure Python stdlib with no Anthropic/OpenAI dependency,
-so the core is already runtime-agnostic; only the thin per-harness wiring is Claude-specific.
-The gap is that nothing tells Codex how to read echo's guidance or drive its loop.
+Phase 1 made echo's guidance readable by Codex (the `AGENTS.md` symlink + a how-to section) and
+confirmed the `bin/` core runs unchanged. But echo's actual workflow surface, its slash
+`commands/*.md` (14) and Task-tool `agents/*.md` (5), is still Claude-Code-only. A Codex user has
+to drive the loop by hand from the CLI how-to; there are no Codex-native Skills or subagents.
+Phase 2 ports that surface to Codex's own primitives, grounded in the verified formats in
+`.echo/research/codex-phase2-skills-and-agents-formats.md`.
 
 ## Proposed outcome
-echo is usable from OpenAI Codex, delivered as the research's Phase 1 (near-zero risk), with the
-Phase 2 command/agent port scoped as an explicit follow-on:
-- **Single source of truth for instructions:** `CLAUDE.md` stays canonical; Codex reads it via a
-  symlink `AGENTS.md -> CLAUDE.md` (Codex reads only `AGENTS.md` and has no `@import`, so a prose
-  pointer would be inert; the symlink delivers the content). Research verified read-through and
-  git symlink tracking (mode 120000).
-- **Codex setup docs:** a short section (in `CLAUDE.md`, so both tools see it) telling a Codex
-  user how to drive the loop by calling the `bin/echo-*` CLIs directly, and to run
-  `bin/echo-plan-guard` / `bin/echo-verify-gate` as manual pre-edit / pre-turn steps, since Codex
-  has no confirmed blocking-hook equivalent.
-- **The `bin/` core runs unchanged under Codex** (already stdlib; confirmed by research).
+echo ships Codex-native artifacts, authored to the primary-source-verified formats, with every
+unverifiable gap documented rather than hidden:
+- **Commands -> Codex Skills.** Each `commands/*.md` becomes a Skill at
+  `.agents/skills/echo-<name>/SKILL.md` (the current, non-deprecated mechanism; NOT the
+  deprecated `~/.codex/prompts/` path). Minimal frontmatter `name` + `description` (which matches
+  echo's own skill templates), body = the adapted command instructions. Since Skills have no
+  `$ARGUMENTS`/`argument-hint` equivalent, the ticket-id/goal extraction moves into the Skill body
+  prose (the same "extract the ticket from what the user typed" pattern the commands already use).
+- **Agents -> per-agent Codex TOML.** Each `agents/*.md` becomes a `.codex/agents/<name>.toml`
+  with `name`, `description`, `developer_instructions` (the role prompt), and `model`. The
+  report-only roles (critic/reviewer/verifier) carry an explicit "never edit files" instruction
+  plus, where expressible, `sandbox_mode = read-only`, because Codex has no per-agent tool
+  allowlist to enforce echo's `tools:` restriction structurally.
+- **Skill templates discoverable by Codex.** The 4 `skills/*-template/SKILL.md` are made
+  reachable under `.agents/skills/` (copy or symlink; decided in spec) since their minimal schema
+  already works under Codex.
+- **Honest invocation/orchestration doc.** A section (in the flow Skill body and referenced from
+  the CLAUDE.md Codex section) explains that maker-checker orchestration is prose-driven
+  (natural-language delegation), because no Codex cross-agent spawn primitive is verified.
 
 ## Affected users / systems
-- **Codex users of echo:** gain the loop (state machine, artifacts, gates as manual steps).
-- **Claude Code users:** unaffected. The symlink does not change what Claude Code reads
-  (`CLAUDE.md` directly), and no `commands/agents/hooks` behavior changes.
-- **echo internals:** adds `AGENTS.md` (symlink) and a Codex section in `CLAUDE.md`; possibly a
-  small `.codex/` scaffold and a generator script for the no-symlink fallback. No change to
-  `bin/`, `lib/`, or the existing Claude-Code plugin surface.
+- **Codex users of echo:** gain `/skills`-invocable (or auto-triggered) echo Skills and named
+  subagents, instead of hand-driving the CLIs.
+- **echo internals:** new `.agents/skills/echo-*/SKILL.md`, new `.codex/agents/*.toml`, a
+  copy/symlink of the template skills into `.agents/skills/`, and doc updates. The `bin/`/`lib/`
+  core, the Claude Code `commands/`, `agents/`, `skills/`, `hooks/` are unchanged (Phase 2 adds
+  Codex-native siblings, it does not rewrite the Claude Code surface).
+- **External:** OpenAI Codex CLI (its Skills discovery and `[agents]`/per-agent-TOML config).
 
 ## Constraints
-- **No Atlassian MCP for the Codex path** (owner decision): Jira progress comments stay a
-  Claude-version-only feature. This is free because the `addCommentToJiraIssue` call lives in the
-  command/markdown layer, not the `bin/` core, and echo already fails open with no MCP. The Codex
-  loop runs identically minus the Jira comments.
-- **No Codex-native gate approximation** (owner decision): do not attempt `approval_policy` /
-  `sandbox_mode` as a gate. echo's hard gates stay enforced only on Claude Code; under Codex they
-  are instruction-level, which is accepted.
-- Keep `CLAUDE.md` as the single source of truth; never hand-maintain two instruction files.
-- Stdlib-only Python, no third-party dependency; no em dashes in user-facing strings/docs.
-- Do not regress the Claude Code plugin: existing tests and smoke stay green.
-- Non-goals for this build: the full `commands/*.md` -> Codex Skills and `agents/*.md` ->
-  `agents.*` port (that is Phase 2, a separate follow-on); Cursor/OpenCode/Copilot support;
-  Windows-specific symlink handling beyond documenting the generated-`AGENTS.md` fallback.
+- Author to the primary-source-verified formats only (research doc): Skills at `.agents/skills/`,
+  `SKILL.md` frontmatter `name` + `description`; per-agent TOML fields `name`, `description`,
+  `developer_instructions`, optional `model`/`sandbox_mode`/`mcp_servers`. Do NOT invent fields.
+- **Do not build against unverified primitives as if they work.** The cross-agent spawn tool
+  (Task-tool equivalent) is UNVERIFIED; orchestration is documented as prose delegation, not coded
+  against a guessed `spawn_agent` schema.
+- No change to the Claude Code plugin surface or the `bin/`/`lib/` core; no regression (existing
+  62 tests + smoke stay green).
+- Stdlib-only if any script is added (none planned); no em dashes in new prose.
+- Carry Phase 1's owner decisions: no Atlassian MCP on the Codex path; gates stay advisory (no
+  Codex-native enforcement); `CLAUDE.md` remains the single source of truth.
+- Non-goals: runtime verification in a live Codex session (flagged as required follow-up, not done
+  here since no Codex is installed); the deprecated custom-prompts path; any hooks/gate
+  enforcement on Codex; changing the Claude Code files.
 
 ## Open questions
-- **Symlink vs generated file:** default to the symlink `ln -s CLAUDE.md AGENTS.md` (works when
-  echo runs inside its own checkout; research verified). Do we also ship a tiny generator
-  (`bin/echo-...` or a make step) that writes `AGENTS.md` from `CLAUDE.md` for repos/Windows
-  checkouts where symlinks do not survive? Leaning: yes, a small optional generator, since it
-  removes the co-location/Windows fragility the research flagged. Settle in spec.
-- **Codex symlink read (unverified):** research confirmed OS-level read-through but did not test
-  Codex's own handling of a symlinked `AGENTS.md`. Leaning: proceed with the symlink and note it
-  as a hands-on verification item; the generator is the fallback if Codex mishandles it.
-- **Where the Codex how-to lives:** a section inside `CLAUDE.md` (so the symlinked `AGENTS.md`
-  carries it to Codex automatically) vs a separate `docs/codex.md`. Leaning: inside `CLAUDE.md`.
-- **Any `.codex/` scaffold now?** e.g. a `.codex/skills/` placeholder or `config.toml` example.
-  Leaning: documentation only in this build; real skill/agent porting is Phase 2.
+- **Scope of the port:** all 14 command Skills, or a core loop subset first (flow, intent, spec,
+  plan, build, verify, ship, status, approve, next)? Leaning: port all 14 for completeness since
+  each is mechanical, but spec may stage it. `install-hooks` has no Codex equivalent (skip or
+  document as N/A).
+- **Template-skill placement:** copy the 4 `skills/*-template` into `.agents/skills/`, or symlink
+  each? Leaning: symlink (single source, consistent with Phase 1), if Codex follows symlinked
+  skill dirs; else copy with a note. Verify.
+- **Agent TOML location:** research shows per-agent files under `.codex/agents/` while Skills use
+  `.agents/skills/` (two different dirs per the docs). Confirm both against the installed Codex
+  version at build time; the Skills path changed once recently (openai/codex#15972).
+- **`sandbox_mode` granularity for the verifier:** it must run tests (Bash) but not edit; whether
+  Codex expresses "execute but not write" is unconfirmed. Leaning: document the limitation, use
+  the closest sandbox setting, rely on prose.
+- **Runtime verification:** none is possible here. Leaning: ship the artifacts with a prominent
+  "verify against your installed Codex CLI (skill discovery, subagent spawn, `.agents/skills`
+  path) before relying on this" note, and treat a live-Codex pass as a separate follow-up.
 
 ## How we know it worked
-- `AGENTS.md` resolves to `CLAUDE.md`'s content (a reader opening `AGENTS.md` gets the CLAUDE.md
-  text); git tracks it as a symlink (mode 120000). If a generator ships, running it produces an
-  `AGENTS.md` whose content matches `CLAUDE.md`.
-- `CLAUDE.md` contains a Codex section describing how to drive the loop via `bin/echo-*` and the
-  manual gate steps.
-- The `bin/` core still runs (`py_compile` clean) and the existing unit + smoke suites stay green
-  (no Claude-Code regression).
-- A concrete, documented command sequence a Codex user runs to drive the loop through the
-  `bin/echo-*` CLIs (e.g. `echo-stage init` -> write artifacts -> `echo-stage approve`/`next` ->
-  `echo-verify`), with `bin/echo-plan-guard` / `bin/echo-verify-gate` invoked manually as the
-  advisory gate steps. Testable as: following the documented steps reaches an approved-plan state
-  and a green `echo-verify` without relying on any Claude Code hook.
+- Each ported Skill exists at `.agents/skills/echo-<name>/SKILL.md` with valid `name` +
+  `description` frontmatter and a body that carries the command's instructions (a check can grep
+  each expected path and assert non-empty frontmatter).
+- Each of the 5 agents exists at `.codex/agents/<name>.toml` with `name`, `description`,
+  `developer_instructions` present; report-only agents contain an explicit no-edit instruction.
+- The template skills are reachable under `.agents/skills/`.
+- The Claude Code surface is unchanged and existing 62 tests + smoke stay green (no regression);
+  new smoke checks assert the Codex artifacts exist and are well-formed.
+- Docs plainly state the verified-vs-unverified boundary (orchestration prose-only, tool-allowlist
+  not enforced, runtime not tested), so a reader is not misled about parity.

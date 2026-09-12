@@ -10,5 +10,10 @@
   "codex:stage:plan": "2026-09-11T20:51:15Z",
   "codex:stage:build": "2026-09-12T01:19:11Z",
   "codex:stage:test": "2026-09-12T01:19:49Z",
-  "codex:ship": "2026-09-12T02:59:20Z"
+  "codex:ship": "2026-09-12T02:59:20Z",
+  "codex-p2:stage:intent": "2026-09-12T03:10:02Z",
+  "codex-p2:stage:spec": "2026-09-12T03:15:47Z",
+  "codex-p2:stage:plan": "2026-09-12T03:22:09Z",
+  "codex-p2:stage:build": "2026-09-12T05:28:05Z",
+  "codex-p2:stage:test": "2026-09-12T05:28:49Z"
 }

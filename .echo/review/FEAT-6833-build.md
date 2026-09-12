@@ -1,41 +1,44 @@
-# Build review: FEAT-6833 — Codex compatibility for the echo plugin
+# Build review: FEAT-6833 — Codex compatibility Phase 2
 
 - ts: 2026-09-12
 - stage: build (maker-checker complete)
-- iterations: 1 builder pass + a targeted doc fix; 1 reviewer pass
-- result: CLEAN of important findings (after fix)
+- iterations: 1 builder (first attempt stalled on an infra watchdog before writing files; retry
+  completed) + 1 reviewer pass + a 1-line nit fix
+- result: CLEAN of important findings
 
 ## Maker-checker summary
-- Builder implemented the plan: appended the `## Using echo from OpenAI Codex` section to
-  `CLAUDE.md`, created `AGENTS.md` as a relative symlink to `CLAUDE.md`, added a README pointer,
-  and added `$REPO`-qualified smoke checks. Proof: 62 passed, smoke green, symlink mode 120000.
-- Reviewer raised one important finding + one minor.
-- Fix applied and re-verified.
+- Builder created 24 new files (limitations doc, 13 command Skills, 5 agent TOMLs, 4 template
+  symlinks) and edited tests/smoke.sh + README.md. All additive.
+- Reviewer found no important issues; one minor wording nit.
+- Nit fixed: `.agents/skills/echo-review/SKILL.md` "the plugin's templates/REVIEW.md" ->
+  "the repo's templates/REVIEW.md" (leftover Claude-Code framing).
 
-## Important finding (CONFIRMED, FIXED)
-- The Codex section told a user to run `bin/echo-plan-guard` bare to check the plan gate, but
-  the script short-circuits to exit 0 with no hook payload (`bin/echo-plan-guard:39` `if not
-  path: return True`), so a bare run always reports "clear" even with an unapproved plan -
-  defeating the safeguard the doc described. Confirmed live: `bin/echo-plan-guard < /dev/null` ->
-  exit 0. `echo-verify-gate` is unaffected (works bare).
-  Fix: the section now says to confirm the plan gate via `bin/echo-stage status` (look for
-  `plan:approved`), and to run `echo-plan-guard` as a real check by feeding it the file path the
-  way Claude Code does (`echo '{"tool_input":{"file_path":"<path>"}}' | bin/echo-plan-guard`),
-  with an explicit note that a bare invocation always exits 0 and is not a real check.
+## Important findings
+None.
 
-## Minor (FIXED)
-- `set-artifact` was described as "resolve each path"; corrected to say it records the artifact
-  in state and creates the ticket-scoped directory.
+## What was verified (reviewer + main session)
+- 13 `.agents/skills/echo-<name>/SKILL.md`: valid `name`/`description` frontmatter; bodies
+  faithfully adapted from each `commands/<name>.md`; `$ARGUMENTS` replaced by prompt-parsing;
+  `${CLAUDE_PLUGIN_ROOT}` replaced by relative `bin/echo-*`; Task-tool spawns replaced by prose
+  delegation to `.codex/agents/<role>.toml`; every referenced CLI/subcommand exists; Jira steps
+  marked Claude-only.
+- 5 `.codex/agents/*.toml`: parse under tomllib; name/description/developer_instructions present;
+  critic/reviewer/verifier carry "never edit; report only" + `sandbox_mode = "read-only"`; builder
+  write-capable; verifier + researcher carry the honest best-effort/unverified comments.
+- 4 template symlinks resolve to the existing `skills/<template>` (no duplicate skill identity).
+- Limitations doc has all 7 required literal strings; every SKILL.md "Under Codex" section hedges
+  orchestration/gates honestly (no overclaim).
 
-## Compliance (clean)
-- Append-only to `CLAUDE.md`; no existing content altered. No em dashes in the new prose.
-- No third-party deps; nothing touched under `commands/agents/skills/hooks/bin/lib`; no secrets.
-- `AGENTS.md` is a relative symlink (mode 120000) resolving to `CLAUDE.md`.
+## Claude compatibility (owner requirement)
+- No modification under `.claude-plugin/`, `commands/`, `agents/`, `skills/`, `hooks/`, `bin/`,
+  `lib/` (scope check empty).
+- `.claude-plugin/plugin.json` + `marketplace.json` still valid JSON.
+- `/reload-plugins` (run by the owner) showed 9 plugins / 99 skills / 50 agents / 28 hooks,
+  unchanged, confirming the Codex `.agents/`/`.codex/` dirs do not leak into Claude Code's plugin
+  surface.
 
 ## Proof (real, verified by main session)
-- Section substance greps (`echo-stage`, `echo-verify`, `echo-plan-guard`, `echo-verify-gate`,
-  `advisory`, section-scoped `Atlassian MCP`) all pass.
+- `python3 -m py_compile lib/echo_common.py bin/echo-*` -> exit 0.
 - `python3 -m pytest tests/test_echo.py -q` -> 62 passed (no test weakened).
-- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED (incl. new codex block).
-- No em dashes added to `CLAUDE.md`/`README.md`.
-- Diff limited to `AGENTS.md`, `CLAUDE.md`, `README.md`, `tests/smoke.sh`, and `.echo/`.
+- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED (incl. new codex-phase2 block).
+- scope check empty; manifests valid; no new em dashes.

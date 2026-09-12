@@ -85,4 +85,40 @@ grep -qi "advisory" "$REPO/CLAUDE.md"
 # "Jira ticket id" policy text at CLAUDE.md:19 (a whole-file `grep jira` is a false positive):
 sed -n '/## Using echo from OpenAI Codex/,$p' "$REPO/CLAUDE.md" | grep -qi "atlassian mcp"
 
+echo "== codex phase2: command skills present =="
+for n in flow research intent spec plan build verify review ship status approve next watch; do
+  test -f "$REPO/.agents/skills/echo-$n/SKILL.md"
+  grep -q "^name:" "$REPO/.agents/skills/echo-$n/SKILL.md"
+  grep -q "^description:" "$REPO/.agents/skills/echo-$n/SKILL.md"
+done
+
+echo "== codex phase2: agent tomls present =="
+for a in builder critic reviewer verifier researcher; do
+  test -f "$REPO/.codex/agents/$a.toml"
+  grep -q "name" "$REPO/.codex/agents/$a.toml"
+  grep -q "description" "$REPO/.codex/agents/$a.toml"
+  grep -q "developer_instructions" "$REPO/.codex/agents/$a.toml"
+done
+for a in critic reviewer verifier; do
+  grep -qiE "never edit|read-only" "$REPO/.codex/agents/$a.toml"
+done
+
+echo "== codex phase2: template skills discoverable =="
+for t in intent-template plan-template research-template spec-template; do
+  test -e "$REPO/.agents/skills/$t/SKILL.md"
+done
+
+echo "== codex phase2: limitations doc has required substance =="
+R="$REPO/.agents/skills/README.md"; test -f "$R"
+for s in "prose-driven" "not enforced by Codex" "no structured arguments" "advisory" "unverified" "install-hooks" "not verified in a live Codex session"; do
+  grep -qi "$s" "$R"
+done
+
+echo "== codex phase2: README points to Skills + limitations =="
+grep -qi "skill" "$REPO/README.md"
+grep -qi "known limitations" "$REPO/README.md"
+
+echo "== codex phase2: Claude plugin manifests still valid (compat) =="
+python3 -c "import json,sys; json.load(open('$REPO/.claude-plugin/plugin.json')); json.load(open('$REPO/.claude-plugin/marketplace.json'))"
+
 echo "ALL SMOKE CHECKS PASSED"
