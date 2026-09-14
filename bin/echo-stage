@@ -217,6 +217,77 @@ def cmd_comment_done(args):
     ec.save_jira_ledger(ticket, ledger)
 
 
+def _plan_target():
+    """Resolve the active item's plan artifact. Returns (abspath, text). Any
+    missing piece (no active item, no recorded plan, unreadable file) yields
+    (None, None) or (abspath, None) so callers can fail open."""
+    state = ec.load_state()
+    _, item = ec.active_item(state)
+    if not item:
+        return None, None
+    rel = (item.get("artifacts") or {}).get("plan")
+    if not rel:
+        return None, None
+    abspath = rel if os.path.isabs(rel) else os.path.join(ec.repo_root(), rel)
+    try:
+        with open(abspath, "r", encoding="utf-8") as fh:
+            return abspath, fh.read()
+    except OSError:
+        return abspath, None
+
+
+def cmd_checklist(args):
+    # Fail open: no active item / no plan path / missing file / no checkboxes
+    # all print `checklist: none` and exit 0.
+    _, text = _plan_target()
+    items = ec.parse_order_checklist(text) if text else []
+    if not items:
+        print("checklist: none")
+        return
+    done, total = ec.checklist_counts(items)
+    print(f"checklist: {done}/{total} done")
+    for i in items:
+        mark = "x" if i["checked"] else " "
+        print(f"{i['index']}. [{mark}] {i['text']}")
+
+
+def _set_index(index, checked, verb):
+    # Manual guard: no plan or out-of-range index is an explicit error (exit 2).
+    abspath, text = _plan_target()
+    if not abspath or text is None:
+        print("echo: no plan artifact to update.", file=sys.stderr)
+        sys.exit(2)
+    items = ec.parse_order_checklist(text)
+    if not (1 <= index <= len(items)):
+        print(f"echo: index {index} out of range (1..{len(items)}).", file=sys.stderr)
+        sys.exit(2)
+    with open(abspath, "w", encoding="utf-8") as fh:
+        fh.write(ec.set_checkbox(text, index, checked))
+    print(f"{verb}: {index}. {items[index - 1]['text']}")
+
+
+def cmd_check(args):
+    _set_index(args.index, True, "checked")
+
+
+def cmd_uncheck(args):
+    _set_index(args.index, False, "unchecked")
+
+
+def cmd_check_next(args):
+    # Mark the first unchecked Order-of-work item. Fail open: no plan / no items
+    # / all checked -> `checklist: nothing to check`, exit 0.
+    abspath, text = _plan_target()
+    items = ec.parse_order_checklist(text) if text else []
+    nxt = next((i for i in items if not i["checked"]), None) if abspath else None
+    if nxt is None:
+        print("checklist: nothing to check")
+        return
+    with open(abspath, "w", encoding="utf-8") as fh:
+        fh.write(ec.set_checkbox(text, nxt["index"], True))
+    print(f"checked: {nxt['index']}. {nxt['text']}")
+
+
 def main():
     p = argparse.ArgumentParser(prog="echo-stage")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -260,6 +331,18 @@ def main():
     pcd = sub.add_parser("comment-done")
     pcd.add_argument("--event", required=True)
     pcd.set_defaults(func=cmd_comment_done)
+
+    sub.add_parser("checklist").set_defaults(func=cmd_checklist)
+
+    pck = sub.add_parser("check")
+    pck.add_argument("--index", type=int, required=True)
+    pck.set_defaults(func=cmd_check)
+
+    puk = sub.add_parser("uncheck")
+    puk.add_argument("--index", type=int, required=True)
+    puk.set_defaults(func=cmd_uncheck)
+
+    sub.add_parser("check-next").set_defaults(func=cmd_check_next)
 
     args = p.parse_args()
     args.func(args)

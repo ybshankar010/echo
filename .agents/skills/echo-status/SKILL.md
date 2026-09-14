@@ -17,8 +17,13 @@ typed if relevant; never fabricate a ticket.
    ```
    python3 bin/echo-stage status
    ```
-2. In one or two lines, tell the user the active ticket, its current stage and gate, and
-   exactly what to run next.
+2. Also show the plan's "Order of work" checklist and its done/total count (fails open to
+   `checklist: none` when there is no active item, plan, or checkboxes):
+   ```
+   python3 bin/echo-stage checklist
+   ```
+3. In one or two lines, tell the user the active ticket, its current stage and gate, the
+   checklist progress, and exactly what to run next.
 
 ## Under Codex
 Gates are advisory and orchestration is prose-driven. See `.agents/skills/README.md` for the

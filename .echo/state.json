@@ -41,8 +41,8 @@
       "updated": "2026-09-07T16:15:15Z"
     },
     "FEAT-6833": {
-      "title": "Codex compatibility Phase 2: commands to Skills, agents to agents.*",
-      "stage": "done",
+      "title": "Plan/build checklist (todo list of exactly what the loop is doing)",
+      "stage": "ship",
       "gates": {
         "intent": "approved",
         "spec": "approved",
@@ -57,7 +57,7 @@
         "plan": ".echo/artifacts/FEAT-6833/plan.md"
       },
       "created": "2026-09-11T12:39:05Z",
-      "updated": "2026-09-12T05:31:08Z"
+      "updated": "2026-09-14T17:36:00Z"
     }
   }
 }

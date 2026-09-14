@@ -18,8 +18,11 @@ from what the user typed; never fabricate a ticket.
 2. Load the `echo:plan-template` skill and read `.echo/artifacts/<ticket>/spec.md`
    (the `Artifacts:` line from `echo-stage status` shows the ticket-scoped folder).
 3. Write `.echo/artifacts/<ticket>/plan.md`: files that change, order of work, risks, and a
-   concrete Proof section (the exact checks that will verify the build). Aim for a plan a
-   different engineer could implement single-pass.
+   concrete Proof section (the exact checks that will verify the build). Author "Order of
+   work" as a GitHub checkbox list (one `- [ ]` per top-level step, step number kept in the
+   text, e.g. `- [ ] 1. ...`); the build flow flips each box to `- [x]` via
+   `echo-stage check-next`, and `echo-stage checklist` prints the list plus a done/total
+   count. Aim for a plan a different engineer could implement single-pass.
 4. Record it:
    ```
    python3 bin/echo-stage set-artifact --stage plan

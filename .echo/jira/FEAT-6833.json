@@ -16,5 +16,9 @@
   "codex-p2:stage:plan": "2026-09-12T03:22:09Z",
   "codex-p2:stage:build": "2026-09-12T05:28:05Z",
   "codex-p2:stage:test": "2026-09-12T05:28:49Z",
-  "codex-p2:ship": "2026-09-12T05:31:30Z"
+  "codex-p2:ship": "2026-09-12T05:31:30Z",
+  "checklist:stage:spec": "2026-09-14T14:01:55Z",
+  "checklist:stage:plan": "2026-09-14T14:08:29Z",
+  "checklist:stage:build": "2026-09-14T14:23:33Z",
+  "checklist:stage:test": "2026-09-14T14:24:18Z"
 }

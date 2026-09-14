@@ -11,7 +11,11 @@ written. A good plan lets a different engineer implement it in one pass.
 ## Required sections
 - **Header** — `Ticket:`, `Stage: Build (kickoff)`, `Derived from: spec.md`, `Status:`.
 - **Files that change** — every file to create/edit, with a phrase on why.
-- **Order of work** — numbered steps; note which can run in parallel (disjoint files).
+- **Order of work** — a GitHub checkbox list, one `- [ ]` per top-level step, with the
+  step number kept in the text (e.g. `- [ ] 1. ...`); note which steps can run in parallel
+  (disjoint files). The build flow flips each box to `- [x]` as its step completes via
+  `echo-stage check-next`, and `/echo:status` shows the list plus a done/total count, so keep
+  one checkbox per step (sub-bullets stay as plain descriptive text, not counted).
 - **Risks** — what could break, and the mitigation for each.
 - **Proof** — the exact checks that verify the build: test commands, expected
   results, manual steps. This is what the Test stage runs.

@@ -475,6 +475,163 @@ def test_parse_checks_empty_is_pending():
     assert ec.parse_checks([]) == ("pending", [])
 
 
+# ---- lib: Order-of-work checklist pure helpers ----
+
+_PLAN_FIXTURE = (
+    "# Plan\n\n"
+    "## Order of work\n"
+    "- [ ] 1. first step\n"
+    "- [x] 2. second step\n"
+    "- [ ] 3. third step\n\n"
+    "## Proof\n"
+    "- [ ] not a work item, must be ignored\n"
+)
+
+
+def test_parse_order_checklist_only_order_section():
+    items = ec.parse_order_checklist(_PLAN_FIXTURE)
+    assert [i["index"] for i in items] == [1, 2, 3]        # Proof checkbox excluded
+    assert [i["checked"] for i in items] == [False, True, False]
+    assert items[0]["text"] == "1. first step"
+
+
+def test_parse_order_checklist_missing_section_is_empty():
+    assert ec.parse_order_checklist("# Plan\n\n## Files\n- [ ] x\n") == []
+    assert ec.parse_order_checklist("") == []
+
+
+def test_parse_order_checklist_no_checkboxes_is_empty():
+    assert ec.parse_order_checklist("## Order of work\n1. plain numbered\n") == []
+
+
+def test_checklist_counts():
+    items = ec.parse_order_checklist(_PLAN_FIXTURE)
+    assert ec.checklist_counts(items) == (1, 3)
+    assert ec.checklist_counts([]) == (0, 0)
+
+
+def test_set_checkbox_flips_only_marker_and_preserves_text():
+    out = ec.set_checkbox(_PLAN_FIXTURE, 1, True)
+    assert "- [x] 1. first step\n" in out                  # marker set
+    assert "- [ ] 2." not in out                           # item 2 (already [x]) untouched
+    # Only the single marker char changed: the rest of the file is byte-identical.
+    assert out == _PLAN_FIXTURE.replace("- [ ] 1. first step", "- [x] 1. first step", 1)
+
+
+def test_set_checkbox_uncheck_roundtrip():
+    checked = ec.set_checkbox(_PLAN_FIXTURE, 1, True)
+    back = ec.set_checkbox(checked, 1, False)
+    assert back == _PLAN_FIXTURE                            # exact restore
+
+
+def test_set_checkbox_out_of_range_is_noop():
+    assert ec.set_checkbox(_PLAN_FIXTURE, 0, True) == _PLAN_FIXTURE
+    assert ec.set_checkbox(_PLAN_FIXTURE, 99, True) == _PLAN_FIXTURE
+    assert ec.set_checkbox(_PLAN_FIXTURE, 4, True) == _PLAN_FIXTURE  # Proof box not reachable
+
+
+def test_set_checkbox_never_touches_proof_section():
+    out = ec.set_checkbox(_PLAN_FIXTURE, 3, True)
+    assert "- [ ] not a work item, must be ignored\n" in out  # Proof checkbox unchanged
+
+
+# ---- CLI: echo-stage checklist / check / uncheck / check-next ----
+
+def _init_repo_with_plan(tmp_path, body=None):
+    root = _init_repo(tmp_path)
+    plan_dir = os.path.join(root, ".echo", "artifacts", "FEAT-3816")
+    os.makedirs(plan_dir, exist_ok=True)
+    with open(os.path.join(plan_dir, "plan.md"), "w", encoding="utf-8") as fh:
+        fh.write(body if body is not None else _PLAN_FIXTURE)
+    _run(["python3", os.path.join(BIN, "echo-stage"), "set-artifact",
+          "--stage", "plan"], root)
+    return root
+
+
+def _plan_text(root):
+    with open(os.path.join(root, ".echo", "artifacts", "FEAT-3816", "plan.md"),
+              encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_cli_checklist_prints_count_and_list(tmp_path):
+    root = _init_repo_with_plan(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "checklist"], root)
+    assert r.returncode == 0
+    assert "checklist: 1/3 done" in r.stdout
+    assert "1. [ ] 1. first step" in r.stdout
+    assert "2. [x] 2. second step" in r.stdout
+
+
+def test_cli_checklist_no_plan_fails_open(tmp_path):
+    root = _init_repo(tmp_path)  # no plan artifact recorded
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "checklist"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "checklist: none"
+
+
+def test_cli_checklist_no_state_fails_open(tmp_path):
+    root = str(tmp_path)  # no echo init at all
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "checklist"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "checklist: none"
+
+
+def test_cli_check_sets_marker_without_rewriting_text(tmp_path):
+    root = _init_repo_with_plan(tmp_path)
+    before = _plan_text(root)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check", "--index", "1"], root)
+    assert r.returncode == 0
+    after = _plan_text(root)
+    assert after == before.replace("- [ ] 1. first step", "- [x] 1. first step", 1)
+    r2 = _run(["python3", os.path.join(BIN, "echo-stage"), "checklist"], root)
+    assert "checklist: 2/3 done" in r2.stdout
+
+
+def test_cli_uncheck_reverts(tmp_path):
+    root = _init_repo_with_plan(tmp_path)
+    _run(["python3", os.path.join(BIN, "echo-stage"), "check", "--index", "1"], root)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "uncheck", "--index", "1"], root)
+    assert r.returncode == 0
+    assert _plan_text(root) == _PLAN_FIXTURE
+
+
+def test_cli_check_out_of_range_exits_2(tmp_path):
+    root = _init_repo_with_plan(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check", "--index", "9"], root)
+    assert r.returncode == 2
+    assert _plan_text(root) == _PLAN_FIXTURE  # unchanged
+
+
+def test_cli_check_no_plan_exits_2(tmp_path):
+    root = _init_repo(tmp_path)  # no plan artifact recorded
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check", "--index", "1"], root)
+    assert r.returncode == 2
+
+
+def test_cli_check_next_marks_first_unchecked(tmp_path):
+    root = _init_repo_with_plan(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check-next"], root)
+    assert r.returncode == 0
+    assert "checked: 1. 1. first step" in r.stdout
+    assert "- [x] 1. first step" in _plan_text(root)
+
+
+def test_cli_check_next_noop_when_all_checked(tmp_path):
+    body = "## Order of work\n- [x] 1. only step\n"
+    root = _init_repo_with_plan(tmp_path, body=body)
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check-next"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "checklist: nothing to check"
+
+
+def test_cli_check_next_no_plan_fails_open(tmp_path):
+    root = _init_repo(tmp_path)  # no plan artifact recorded
+    r = _run(["python3", os.path.join(BIN, "echo-stage"), "check-next"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == "checklist: nothing to check"
+
+
 # ---- CLI: echo-watch fail-open run (no remote / no PR) ----
 
 def test_watch_run_fail_open_no_pr(tmp_path):

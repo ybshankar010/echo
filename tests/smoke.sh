@@ -127,4 +127,16 @@ bash -n "$REPO/codex-install.sh"
 AGENTS_SKILLS_DIR="$T/askills" CODEX_AGENTS_DIR="$T/cagents" "$REPO/codex-install.sh" --dry-run >/dev/null
 test ! -e "$T/askills"   # dry-run must not create anything
 
+echo "== checklist: parse, count, check-next on a fixture plan =="
+mkdir -p "$T/.echo/artifacts/FEAT-3816"
+printf '## Order of work\n- [ ] 1. first\n- [ ] 2. second\n\n## Proof\n- [ ] not counted\n' \
+  > "$T/.echo/artifacts/FEAT-3816/plan.md"
+"$BIN/echo-stage" set-artifact --stage plan >/dev/null
+"$BIN/echo-stage" checklist | grep -q "checklist: 0/2 done"     # Proof checkbox excluded
+"$BIN/echo-stage" check-next | grep -q "checked: 1"
+"$BIN/echo-stage" checklist | grep -q "checklist: 1/2 done"
+"$BIN/echo-stage" check --index 2 >/dev/null
+"$BIN/echo-stage" checklist | grep -q "checklist: 2/2 done"
+grep -q -- "- \[x\] 1. first" "$T/.echo/artifacts/FEAT-3816/plan.md"   # text preserved, marker set
+
 echo "ALL SMOKE CHECKS PASSED"

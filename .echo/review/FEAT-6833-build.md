@@ -1,44 +1,41 @@
-# Build review: FEAT-6833 — Codex compatibility Phase 2
+# Build review: FEAT-6833 — Plan/build checklist
 
-- ts: 2026-09-12
+- ts: 2026-09-14
 - stage: build (maker-checker complete)
-- iterations: 1 builder (first attempt stalled on an infra watchdog before writing files; retry
-  completed) + 1 reviewer pass + a 1-line nit fix
+- iterations: 1 builder pass + 1 reviewer pass
 - result: CLEAN of important findings
 
-## Maker-checker summary
-- Builder created 24 new files (limitations doc, 13 command Skills, 5 agent TOMLs, 4 template
-  symlinks) and edited tests/smoke.sh + README.md. All additive.
-- Reviewer found no important issues; one minor wording nit.
-- Nit fixed: `.agents/skills/echo-review/SKILL.md` "the plugin's templates/REVIEW.md" ->
-  "the repo's templates/REVIEW.md" (leftover Claude-Code framing).
+## What was built
+- `lib/echo_common.py`: `parse_order_checklist`, `checklist_counts`, `set_checkbox` (pure).
+- `bin/echo-stage`: `checklist`, `check --index`, `uncheck --index`, `check-next` subcommands.
+- `skills/plan-template/SKILL.md` + `templates/plan.md`: Order of work as `- [ ]` checkboxes
+  (Codex plan-template updates via the existing symlink).
+- `commands/status.md`: shows the checklist; `commands/build.md`: in-order pass calls `check-next`,
+  fix-scope reruns explicitly do not.
+- `.agents/skills/echo-plan` + `echo-status`: Codex parity.
+- `tests/test_echo.py` (+18 tests), `tests/smoke.sh` (checklist fixture block).
 
-## Important findings
-None.
+## Reviewer verdict: no important findings
+- `set_checkbox` changes only the marker char (`re.sub(r"\[( |x|X)\]", ..., count=1)` on the target
+  line within the Order-of-work scan); step text is byte-identical (asserted by
+  `test_set_checkbox_flips_only_marker_and_preserves_text`); out-of-range and Proof-section indices
+  are no-ops (tested).
+- `parse_order_checklist` scopes to `## Order of work` up to the next `## `; Proof checkboxes
+  excluded; 1-based indexing correct; missing/empty section returns [].
+- Fail-open (checklist/check-next) vs exit-2 (check/uncheck out-of-range or no plan) all correct
+  and tested.
+- build.md literally excludes fix-scope reruns from `check-next` (prevents wrong-step advance).
+- Scope clean: no change under `.claude-plugin/`, other `bin/`/`lib/`/`commands/`/`agents/`/`hooks/`;
+  `.agents/skills/plan-template` stays a symlink; manifests valid.
 
-## What was verified (reviewer + main session)
-- 13 `.agents/skills/echo-<name>/SKILL.md`: valid `name`/`description` frontmatter; bodies
-  faithfully adapted from each `commands/<name>.md`; `$ARGUMENTS` replaced by prompt-parsing;
-  `${CLAUDE_PLUGIN_ROOT}` replaced by relative `bin/echo-*`; Task-tool spawns replaced by prose
-  delegation to `.codex/agents/<role>.toml`; every referenced CLI/subcommand exists; Jira steps
-  marked Claude-only.
-- 5 `.codex/agents/*.toml`: parse under tomllib; name/description/developer_instructions present;
-  critic/reviewer/verifier carry "never edit; report only" + `sandbox_mode = "read-only"`; builder
-  write-capable; verifier + researcher carry the honest best-effort/unverified comments.
-- 4 template symlinks resolve to the existing `skills/<template>` (no duplicate skill identity).
-- Limitations doc has all 7 required literal strings; every SKILL.md "Under Codex" section hedges
-  orchestration/gates honestly (no overclaim).
+## Notes (not blocking)
+- Em dash on the rewritten `## Order of work` bullet in plan-template SKILL.md is pre-existing
+  house style (all sibling bullets use the same ` - ` separator); not newly authored prose.
+- Informational: the section-scan logic is duplicated between `parse_order_checklist` and
+  `set_checkbox`; consistent today, a future maintenance note (could share a helper later).
 
-## Claude compatibility (owner requirement)
-- No modification under `.claude-plugin/`, `commands/`, `agents/`, `skills/`, `hooks/`, `bin/`,
-  `lib/` (scope check empty).
-- `.claude-plugin/plugin.json` + `marketplace.json` still valid JSON.
-- `/reload-plugins` (run by the owner) showed 9 plugins / 99 skills / 50 agents / 28 hooks,
-  unchanged, confirming the Codex `.agents/`/`.codex/` dirs do not leak into Claude Code's plugin
-  surface.
-
-## Proof (real, verified by main session)
+## Proof (verified by main session)
 - `python3 -m py_compile lib/echo_common.py bin/echo-*` -> exit 0.
-- `python3 -m pytest tests/test_echo.py -q` -> 62 passed (no test weakened).
-- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED (incl. new codex-phase2 block).
-- scope check empty; manifests valid; no new em dashes.
+- `python3 -m pytest tests/test_echo.py -q` -> 80 passed (62 prior + 18 new, none weakened).
+- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED (incl. checklist block).
+- Dogfood: `echo-stage checklist` reads this plan's own Order of work (0/9 done, listed).

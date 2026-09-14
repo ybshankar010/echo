@@ -9,7 +9,7 @@
 - `<path>` — <why>
 
 ## Order of work
-1. <Step.>  <!-- note steps that can run in parallel (disjoint files) -->
+- [ ] 1. <Step.>  <!-- note steps that can run in parallel (disjoint files) -->
 
 ## Risks
 - <What could break> — <mitigation>

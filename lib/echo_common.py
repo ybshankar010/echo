@@ -157,6 +157,73 @@ def parse_checks(data: list):
     return "pass", []
 
 
+# ---------------------------------------------------------------------------
+# Plan "Order of work" checklist: pure text helpers (no IO). The plan's
+# "## Order of work" section is authored as a GitHub checkbox list; these parse,
+# count, and toggle it. Only that section is treated as the checklist so
+# incidental checkboxes elsewhere (e.g. in Proof) are never counted or touched.
+# ---------------------------------------------------------------------------
+
+_ORDER_HEADING_RE = re.compile(r"^##\s+Order of work")
+_ANY_H2_RE = re.compile(r"^##\s")
+_CHECKBOX_RE = re.compile(r"^\s*-\s+\[( |x|X)\]\s+(.*)$")
+
+
+def parse_order_checklist(text: str) -> list:
+    """Parse the plan's `## Order of work` checkbox list into an ordered list of
+    {index (1-based), checked (bool), text}. Scans only the section under the
+    `## Order of work` heading (up to the next `## ` heading or end of file).
+    No section, or none matching, returns []. Pure: no IO.
+    """
+    items = []
+    in_section = False
+    idx = 0
+    for line in (text or "").splitlines():
+        if _ORDER_HEADING_RE.match(line):
+            in_section = True
+            continue
+        if in_section and _ANY_H2_RE.match(line):
+            break
+        if in_section:
+            m = _CHECKBOX_RE.match(line)
+            if m:
+                idx += 1
+                items.append({
+                    "index": idx,
+                    "checked": m.group(1) in ("x", "X"),
+                    "text": m.group(2),
+                })
+    return items
+
+
+def checklist_counts(items) -> tuple:
+    """Return (done, total) for a parsed checklist."""
+    return sum(1 for i in items if i["checked"]), len(items)
+
+
+def set_checkbox(text: str, index: int, checked: bool) -> str:
+    """Return `text` with only the marker char of the 1-based index-th
+    Order-of-work checkbox line rewritten ([ ]->[x] or back); everything else is
+    byte-identical. Out-of-range index returns `text` unchanged. Pure: no IO.
+    """
+    lines = (text or "").splitlines(keepends=True)
+    in_section = False
+    idx = 0
+    marker = "x" if checked else " "
+    for i, line in enumerate(lines):
+        if _ORDER_HEADING_RE.match(line):
+            in_section = True
+            continue
+        if in_section and _ANY_H2_RE.match(line):
+            break
+        if in_section and _CHECKBOX_RE.match(line):
+            idx += 1
+            if idx == index:
+                lines[i] = re.sub(r"\[( |x|X)\]", f"[{marker}]", line, count=1)
+                return "".join(lines)
+    return text
+
+
 def review_dir(root: Optional[str] = None) -> str:
     return os.path.join(echo_dir(root), "review")
 
