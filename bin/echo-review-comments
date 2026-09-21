@@ -1,0 +1,231 @@
+#!/usr/bin/env python3
+"""echo-review-comments - PR review-thread enumeration/resolution (determinism).
+
+Subcommands:
+  fetch   [--ticket T]
+            Resolve the PR for the checked-out branch, list its review threads
+            via `gh api graphql`, write a human artifact at
+            .echo/review/<ticket>-comments.md, and print one TSV line per
+            UNRESOLVED thread not already resolved in the ledger:
+            `thread\\t<id>\\t<path>:<line>\\t<author>\\t<one-line body>`.
+            Fails open: no gh/auth/remote/PR/ticket -> prints nothing, exits 0.
+  mark    --thread ID --status STATUS [--commit SHA] [--ticket T]
+            Stamp the ledger entry for a thread id with {status, ts, commit}.
+  resolve --thread ID [--ticket T] [--dry-run]
+            Run the GraphQL resolveReviewThread mutation; on success stamp the
+            ledger status="resolved". --dry-run prints the intended call and
+            touches no network. Fails open (reports failure, exits 0).
+
+Never calls the Jira MCP: posting stays in commands/address-review.md, matching
+how echo-watch splits the determinism from the markdown post. Standard library
+only; shells out to `gh` for GitHub reads/writes. Never records a diff, token,
+or secret in the artifact, the ledger, or the printed lines.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# gh + ticket helpers (fail open)
+# ---------------------------------------------------------------------------
+
+def _gh(args, cwd, timeout=ec.GH_CALL_TIMEOUT):
+    try:
+        return subprocess.run(["gh", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def _resolve_ticket(args):
+    """Ticket from --ticket else the branch else the active item; None if none.
+    A malformed --ticket is coerced through the regex so it never reaches a
+    filesystem path as-is."""
+    if getattr(args, "ticket", None):
+        m = ec.TICKET_RE.search(args.ticket)
+        return m.group(0) if m else None
+    t = ec.ticket_from_branch()
+    if t:
+        return t
+    tk, _ = ec.active_item(ec.load_state())
+    return tk if tk and ec.TICKET_RE.search(tk) else None
+
+
+# ---------------------------------------------------------------------------
+# GraphQL
+# ---------------------------------------------------------------------------
+
+_THREADS_QUERY = (
+    "query($owner:String!,$repo:String!,$number:Int!){"
+    "repository(owner:$owner,name:$repo){"
+    "pullRequest(number:$number){"
+    "reviewThreads(first:100){nodes{"
+    "id isResolved isOutdated path line "
+    "comments(first:1){nodes{author{login} body url}}"
+    "}}}}}"
+)
+
+_RESOLVE_MUTATION = (
+    "mutation($id:ID!){"
+    "resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}"
+    "}"
+)
+
+
+# ---------------------------------------------------------------------------
+# Artifact
+# ---------------------------------------------------------------------------
+
+def _loc(t):
+    """Human location for a thread: path[:line], or (general) when unanchored."""
+    if not t["path"]:
+        return "(general)"
+    if t["line"] in (None, ""):
+        return t["path"]
+    return f"{t['path']}:{t['line']}"
+
+
+def _render_artifact(ticket, pr, threads, bot_login):
+    lines = [
+        f"# Review threads: {ticket}",
+        "",
+        f"- ticket: {ticket}",
+        f"- timestamp: {ec.now_iso()}",
+        f"- pr: {pr.get('url', 'none')}",
+        "",
+        "## Unresolved threads",
+    ]
+    unresolved = [t for t in threads if not t["is_resolved"]]
+    if not unresolved:
+        lines.append("- none")
+    else:
+        for t in unresolved:
+            label = " (review bot)" if bot_login and t["author"] == bot_login else ""
+            loc = _loc(t)
+            lines.append(
+                f"- {loc} - {t['author']}{label}: {t['body_oneline']} ({t['url']})"
+            )
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+def cmd_fetch(args):
+    ticket = _resolve_ticket(args)
+    if not ticket:
+        return  # fail open: no ticket -> print nothing, exit 0
+    root = ec.repo_root()
+    pr = ec.resolve_pr(root)
+    if not pr:
+        return  # fail open: no gh/auth/remote/PR -> print nothing, exit 0
+
+    r = _gh(["api", "graphql",
+             "-f", f"query={_THREADS_QUERY}",
+             "-f", f"owner={pr['owner']}",
+             "-f", f"repo={pr['repo']}",
+             "-F", f"number={pr['number']}"], root)
+    if r is None or r.returncode != 0:
+        return  # fail open: graphql read failed -> print nothing, exit 0
+    try:
+        data = json.loads(r.stdout)
+    except (ValueError, TypeError):
+        return  # fail open: unparseable payload -> print nothing, exit 0
+    threads = ec.parse_review_threads(data)
+
+    bot_login = (ec.load_config(root).get("review_bot_login") or "").strip()
+    path = os.path.join(root, ec.review_comments_relpath(ticket))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(_render_artifact(ticket, pr, threads, bot_login))
+
+    ledger = ec.load_thread_ledger(ticket, root)
+    for t in threads:
+        if t["is_resolved"]:
+            continue
+        entry = ledger.get(t["id"])
+        if isinstance(entry, dict) and entry.get("status") == "resolved":
+            continue
+        loc = _loc(t)
+        print(f"thread\t{t['id']}\t{loc}\t{t['author']}\t{t['body_oneline']}")
+
+
+def cmd_mark(args):
+    ticket = _resolve_ticket(args)
+    if not ticket:
+        print("echo-review-comments: no ticket resolvable (branch, --ticket, or "
+              "active item); nothing marked.")
+        return
+    root = ec.repo_root()
+    ledger = ec.load_thread_ledger(ticket, root)
+    ledger[args.thread] = {
+        "status": args.status,
+        "ts": ec.now_iso(),
+        "commit": args.commit or "",
+    }
+    ec.save_thread_ledger(ticket, ledger, root)
+    print(f"marked {args.thread} status={args.status} for {ticket}")
+
+
+def cmd_resolve(args):
+    ticket = _resolve_ticket(args)
+    if not ticket:
+        print("echo-review-comments: no ticket resolvable (branch, --ticket, or "
+              "active item); nothing resolved.")
+        return
+    root = ec.repo_root()
+    gh_cmd = ["gh", "api", "graphql",
+              "-f", f"query={_RESOLVE_MUTATION}",
+              "-f", f"id={args.thread}"]
+    if args.dry_run:
+        print("DRY $ " + " ".join(gh_cmd))
+        return  # no network, no ledger write
+    r = _gh(gh_cmd[1:], root)
+    if r is None or r.returncode != 0:
+        detail = (r.stderr.strip() if r is not None else "gh not available")
+        print(f"echo-review-comments: resolve failed for {args.thread}: {detail}")
+        return  # fail open
+    ledger = ec.load_thread_ledger(ticket, root)
+    ledger[args.thread] = {
+        "status": "resolved",
+        "ts": ec.now_iso(),
+        "commit": "",
+    }
+    ec.save_thread_ledger(ticket, ledger, root)
+    print(f"resolved {args.thread} for {ticket}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-review-comments")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pf = sub.add_parser("fetch")
+    pf.add_argument("--ticket", default=None)
+    pf.set_defaults(func=cmd_fetch)
+
+    pm = sub.add_parser("mark")
+    pm.add_argument("--thread", required=True)
+    pm.add_argument("--status", required=True)
+    pm.add_argument("--commit", default=None)
+    pm.add_argument("--ticket", default=None)
+    pm.set_defaults(func=cmd_mark)
+
+    pr = sub.add_parser("resolve")
+    pr.add_argument("--thread", required=True)
+    pr.add_argument("--ticket", default=None)
+    pr.add_argument("--dry-run", action="store_true")
+    pr.set_defaults(func=cmd_resolve)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

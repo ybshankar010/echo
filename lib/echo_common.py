@@ -328,6 +328,168 @@ def save_jira_ledger(ticket: str, data: dict, root: Optional[str] = None) -> Non
     _write_json(jira_ledger_path(ticket, root), data)
 
 
+# ---------------------------------------------------------------------------
+# Review threads - GitHub PR review-thread enumeration/resolution support for
+# /echo:address-review. Determinism (gh calls, JSON parsing, the per-thread
+# ledger) lives here; the orchestration lives in commands/address-review.md.
+# Fails open: a missing/unauthenticated/hung gh yields None, never a raise.
+# ---------------------------------------------------------------------------
+
+# Per-call wall-clock cap so a single hung gh read (network hang, auth prompt,
+# outage) cannot block forever. Mirrors echo-watch's GH_CALL_TIMEOUT.
+GH_CALL_TIMEOUT = 30
+
+
+def one_line(body: str, maxlen: int = 200) -> str:
+    """Collapse a comment body to a single truncated line. Never keeps a diff,
+    token, or secret past the cap. Mirrors echo-watch._one_line so artifacts
+    stay one-line only."""
+    text = " ".join((body or "").split())
+    return text[:maxlen]
+
+
+def _parse_pr_view(text: str) -> Optional[dict]:
+    """Pure parse of `gh pr view --json number,url,headRefOid` output into
+    {number, url, head_sha}, or None if the payload is missing a PR number."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "number" not in data:
+        return None
+    return {
+        "number": data.get("number"),
+        "url": data.get("url", ""),
+        "head_sha": data.get("headRefOid", ""),
+    }
+
+
+def _parse_repo_view(text: str) -> Optional[dict]:
+    """Pure parse of `gh repo view --json owner,name` output into
+    {owner, repo}, or None if owner/name cannot be read."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    owner = data.get("owner")
+    if isinstance(owner, dict):
+        owner = owner.get("login")
+    name = data.get("name")
+    if not owner or not name:
+        return None
+    return {"owner": owner, "repo": name}
+
+
+def resolve_pr(cwd: Optional[str] = None) -> Optional[dict]:
+    """Return {number, url, head_sha, owner, repo} for the checked-out branch's
+    open PR, or None. Resolves by branch (not by ticket) via `gh pr view` and
+    `gh repo view`. Fails closed to None on any error (no gh, no auth, no PR)."""
+    cwd = cwd or repo_root()
+
+    def _gh(args):
+        try:
+            return subprocess.run(["gh", *args], cwd=cwd, capture_output=True,
+                                  text=True, timeout=GH_CALL_TIMEOUT)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            return None
+
+    r = _gh(["pr", "view", "--json", "number,url,headRefOid"])
+    if r is None or r.returncode != 0:
+        return None
+    pr = _parse_pr_view(r.stdout)
+    if pr is None:
+        return None
+    r2 = _gh(["repo", "view", "--json", "owner,name"])
+    if r2 is None or r2.returncode != 0:
+        return None
+    repo = _parse_repo_view(r2.stdout)
+    if repo is None:
+        return None
+    return {
+        "number": pr["number"],
+        "url": pr["url"],
+        "head_sha": pr["head_sha"],
+        "owner": repo["owner"],
+        "repo": repo["repo"],
+    }
+
+
+def _thread_nodes(data) -> list:
+    """Dig the reviewThreads nodes list out of a decoded GraphQL response,
+    accepting either the full response, the inner repository shape, or a bare
+    nodes list. Returns [] on any unexpected shape. Pure."""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+    cur = data
+    if isinstance(cur.get("data"), dict):
+        cur = cur["data"]
+    for key in ("repository", "pullRequest", "reviewThreads"):
+        if not isinstance(cur, dict):
+            return []
+        cur = cur.get(key, {})
+    if isinstance(cur, dict):
+        nodes = cur.get("nodes")
+        return nodes if isinstance(nodes, list) else []
+    return []
+
+
+def parse_review_threads(data) -> list:
+    """Pure function over decoded GraphQL JSON
+    (repository.pullRequest.reviewThreads.nodes) -> a list of
+    {id, is_resolved, is_outdated, path, line, author, body_oneline, url}.
+    Author/body/url come from the FIRST comment in each thread; the body is
+    truncated to one line via one_line so no diff/token/secret is stored. Pure:
+    no IO."""
+    threads = []
+    for node in _thread_nodes(data):
+        if not isinstance(node, dict):
+            continue
+        comments = ((node.get("comments") or {}).get("nodes")) or []
+        first = comments[0] if comments and isinstance(comments[0], dict) else {}
+        author = (first.get("author") or {}).get("login") or ""
+        threads.append({
+            "id": node.get("id", ""),
+            "is_resolved": bool(node.get("isResolved")),
+            "is_outdated": bool(node.get("isOutdated")),
+            "path": node.get("path") or "",
+            "line": node.get("line"),
+            "author": author,
+            "body_oneline": one_line(first.get("body")),
+            "url": first.get("url") or "",
+        })
+    return threads
+
+
+# ---------------------------------------------------------------------------
+# Review-thread ledger - a committed, per-ticket record of thread node id ->
+# {status, ts, commit} so /echo:address-review skips already-resolved threads
+# and re-runs are idempotent. Mirrors the Jira ledger helpers; fails open.
+# ---------------------------------------------------------------------------
+
+def thread_ledger_path(ticket: str, root: Optional[str] = None) -> str:
+    return os.path.join(review_dir(root), f"{ticket}-threads.json")
+
+
+def load_thread_ledger(ticket: str, root: Optional[str] = None) -> dict:
+    data = _read_json(thread_ledger_path(ticket, root))
+    # Coerce anything that is not a dict to {} so callers never crash writing to
+    # the ledger. Fail open.
+    return data if isinstance(data, dict) else {}
+
+
+def save_thread_ledger(ticket: str, data: dict, root: Optional[str] = None) -> None:
+    _write_json(thread_ledger_path(ticket, root), data)
+
+
+def review_comments_relpath(ticket: str) -> str:
+    """Repo-relative path for the human-readable review-threads artifact."""
+    return os.path.join(".echo", "review", f"{ticket}-comments.md")
+
+
 def new_item(ticket: str, title: str) -> dict:
     ts = now_iso()
     return {

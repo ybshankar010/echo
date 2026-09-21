@@ -782,3 +782,159 @@ def test_ledger_realert_on_new_review_id(tmp_path):
     assert same.stdout.strip() == "skip"
     fresh = _run(["python3", S, "comment-needed", "--event", "review:seen:1002"], root)
     assert fresh.stdout.strip() == "post FEAT-3816"
+
+
+# ---- lib: review-thread parsing (pure) ----
+
+_THREADS_JSON = {
+    "data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": [
+        {"id": "T_unresolved", "isResolved": False, "isOutdated": False,
+         "path": "a.py", "line": 10,
+         "comments": {"nodes": [{"author": {"login": "alice"},
+                                 "body": "x" * 500, "url": "http://u/1"}]}},
+        {"id": "T_resolved", "isResolved": True, "isOutdated": True,
+         "path": "b.py", "line": 2,
+         "comments": {"nodes": [{"author": {"login": "bot"},
+                                 "body": "already handled", "url": "http://u/2"}]}},
+    ]}}}}
+}
+
+
+def test_parse_review_threads_flags_and_truncates():
+    threads = ec.parse_review_threads(_THREADS_JSON)
+    assert [t["id"] for t in threads] == ["T_unresolved", "T_resolved"]
+    assert [t["is_resolved"] for t in threads] == [False, True]
+    # The long body is collapsed to one truncated line (no diff/secret leaks).
+    assert len(threads[0]["body_oneline"]) <= 200
+    assert "\n" not in threads[0]["body_oneline"]
+    assert threads[0]["author"] == "alice"
+    assert threads[0]["path"] == "a.py"
+    assert threads[0]["line"] == 10
+    assert threads[0]["url"] == "http://u/1"
+    # Callers drop resolved threads by the is_resolved flag.
+    unresolved = [t for t in threads if not t["is_resolved"]]
+    assert [t["id"] for t in unresolved] == ["T_unresolved"]
+
+
+def test_parse_review_threads_bad_shape_is_empty():
+    assert ec.parse_review_threads({}) == []
+    assert ec.parse_review_threads(None) == []
+    assert ec.parse_review_threads("nope") == []
+
+
+def test_parse_pr_view_ok_and_bad():
+    ok = ec._parse_pr_view('{"number":42,"url":"http://pr/42","headRefOid":"abc123"}')
+    assert ok == {"number": 42, "url": "http://pr/42", "head_sha": "abc123"}
+    assert ec._parse_pr_view('{"url":"http://pr"}') is None       # no number
+    assert ec._parse_pr_view("{ not json") is None
+
+
+def test_parse_repo_view_ok_and_bad():
+    ok = ec._parse_repo_view('{"owner":{"login":"acme"},"name":"widgets"}')
+    assert ok == {"owner": "acme", "repo": "widgets"}
+    assert ec._parse_repo_view('{"name":"widgets"}') is None       # no owner
+    assert ec._parse_repo_view("{ not json") is None
+
+
+# ---- lib: review-thread ledger ----
+
+def test_thread_ledger_path_is_per_ticket(tmp_path):
+    root = str(tmp_path)
+    assert ec.thread_ledger_path("FEAT-9", root) == os.path.join(
+        root, ".echo", "review", "FEAT-9-threads.json")
+
+
+def test_thread_ledger_missing_returns_empty(tmp_path):
+    assert ec.load_thread_ledger("FEAT-9", str(tmp_path)) == {}
+
+
+def test_thread_ledger_roundtrip_and_dedup(tmp_path):
+    root = str(tmp_path)
+    ec.save_thread_ledger("FEAT-9", {"T1": {"status": "addressed"}}, root)
+    assert ec.load_thread_ledger("FEAT-9", root) == {"T1": {"status": "addressed"}}
+    # Re-stamping the same thread id overwrites in place (dict keyed by id):
+    led = ec.load_thread_ledger("FEAT-9", root)
+    led["T1"] = {"status": "resolved"}
+    ec.save_thread_ledger("FEAT-9", led, root)
+    back = ec.load_thread_ledger("FEAT-9", root)
+    assert list(back.keys()) == ["T1"]                 # no duplicate entry
+    assert back["T1"]["status"] == "resolved"
+
+
+def test_thread_ledger_wrong_type_returns_empty(tmp_path):
+    root = str(tmp_path)
+    ec.ensure_dirs(root)
+    with open(ec.thread_ledger_path("FEAT-9", root), "w", encoding="utf-8") as fh:
+        fh.write('["T1"]')                             # valid JSON, wrong type
+    assert ec.load_thread_ledger("FEAT-9", root) == {}
+
+
+def test_review_comments_relpath_is_ticket_scoped():
+    assert ec.review_comments_relpath("FEAT-9") == os.path.join(
+        ".echo", "review", "FEAT-9-comments.md")
+
+
+# ---- CLI: echo-review-comments ----
+
+def test_review_comments_fetch_fail_open_no_pr(tmp_path):
+    # No gh/PR for this fresh repo -> print nothing, exit 0 (fail open).
+    root = _init_repo(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-review-comments"),
+              "fetch", "--ticket", "FEAT-3816"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_review_comments_mark_writes_ledger(tmp_path):
+    root = _init_repo(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-review-comments"),
+              "mark", "--thread", "T1", "--status", "addressed",
+              "--ticket", "FEAT-3816"], root)
+    assert r.returncode == 0
+    led = ec.load_thread_ledger("FEAT-3816", root)
+    assert led["T1"]["status"] == "addressed"
+    assert led["T1"]["ts"]                              # timestamp stamped
+
+
+def test_review_comments_resolve_dry_run_no_network(tmp_path):
+    root = _init_repo(tmp_path)
+    r = _run(["python3", os.path.join(BIN, "echo-review-comments"),
+              "resolve", "--thread", "T1", "--ticket", "FEAT-3816", "--dry-run"], root)
+    assert r.returncode == 0
+    assert "DRY $" in r.stdout
+    assert "resolveReviewThread" in r.stdout
+    # --dry-run must not stamp the ledger (no network, no side effect).
+    assert ec.load_thread_ledger("FEAT-3816", root) == {}
+
+
+# ---- CLI: echo-git followup ----
+
+def test_followup_requires_ticket(tmp_path):
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)     # no echo state, no ticket branch
+    r = _run(["python3", os.path.join(BIN, "echo-git"),
+              "followup", "-m", "x"], root)
+    assert r.returncode == 2
+
+
+def test_followup_aborts_on_base_branch(tmp_path):
+    # Active item resolves a ticket, but the current branch is main/master (a base
+    # branch), so followup must abort: it never creates a branch.
+    root = _init_repo(tmp_path)
+    # Pin the branch name so the test does not depend on git's init.defaultBranch.
+    subprocess.run(["git", "branch", "-m", "main"], cwd=root, capture_output=True)
+    r = _run(["python3", os.path.join(BIN, "echo-git"),
+              "followup", "-m", "x"], root)
+    assert r.returncode == 2
+
+
+def test_followup_dry_run_on_feature_branch(tmp_path):
+    root = _init_repo(tmp_path)
+    subprocess.run(["git", "checkout", "-b", "FEAT-3816/foo"], cwd=root,
+                   capture_output=True)
+    r = _run(["python3", os.path.join(BIN, "echo-git"),
+              "followup", "-m", "address review comments", "--dry-run"], root)
+    assert r.returncode == 0
+    assert "DRY $ git commit -m" in r.stdout
+    assert "FEAT-3816: address review comments" in r.stdout
+    assert "DRY $ git push origin FEAT-3816/foo" in r.stdout

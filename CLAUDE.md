@@ -14,6 +14,9 @@ through echo's own loop instead of editing ad hoc. The active work item lives in
 - Or step by step: `/echo:research` (optional, when facts are unknown) -> `/echo:intent
   <TICKET> <goal>` -> review -> `/echo:approve` -> `/echo:next` (spec) -> ... -> `/echo:build`
   -> `/echo:verify` -> `/echo:ship`. `/echo:status` shows where you are and the next action.
+- After the PR is under review, `/echo:address-review` closes the review loop: on the checked-out
+  PR branch it reads the open review threads, has the `builder` fix them, verifies, pushes a
+  follow-up commit (no new PR), and resolves each addressed thread.
 - No code before an approved `plan.md`: the plan-guard hook blocks source edits until the
   plan gate is approved, so write intent -> spec -> plan first.
 - Every change carries a Jira ticket id (`[A-Z]+-[0-9]+`); never fabricate one. Ship stays

@@ -127,6 +127,54 @@ def cmd_ship(args):
     print(f"\necho-git: shipped {ticket} on branch {branch}.")
 
 
+def cmd_followup(args):
+    """Add a commit to an existing PR branch: stage -> commit -> push. Never
+    rebases (avoids a force-push on an already-pushed branch) and never opens a
+    new PR (it prints the existing one). Aborts on the base/main/master branch:
+    a followup needs an existing feature branch, it does not create one."""
+    cfg = ec.load_config()
+    base = cfg.get("base_branch", "develop")
+    dry = args.dry_run
+    ticket = resolve_ticket(args)
+
+    if ec.git("rev-parse", "--is-inside-work-tree").returncode != 0:
+        print("echo-git: not a git repository.", file=sys.stderr)
+        sys.exit(2)
+
+    branch = ec.current_branch()
+    if branch in ("", base, "main", "master"):
+        print(f"echo-git: followup needs an existing feature branch, but the "
+              f"current branch is '{branch or 'detached'}'. Check out the PR "
+              f"branch first (followup never creates a branch).", file=sys.stderr)
+        sys.exit(2)
+
+    # Stage
+    add = ["git", "add"]
+    add += ["-u"] if args.staged else ["-A"]
+    sh(add, dry)
+
+    # Commit
+    commit_msg = f"{ticket}: {args.message}\n\n{TRAILER}"
+    code, _ = sh(["git", "commit", "-m", commit_msg], dry)
+    if code != 0 and not dry:
+        print("echo-git: commit failed (nothing staged, or hook rejected).",
+              file=sys.stderr)
+        sys.exit(code)
+
+    # Push the current branch (no rebase).
+    code, _ = sh(["git", "push", "origin", branch], dry)
+    if code != 0 and not dry:
+        sys.exit(code)
+
+    # Point at the existing PR; never create a new one.
+    if not _has_gh():
+        print("\necho-git: `gh` not available/authenticated. Pushed. View the PR:")
+        print("  gh pr view --web")
+        return
+    sh(["gh", "pr", "view", "--json", "url"], dry)
+    print(f"\necho-git: pushed followup for {ticket} on branch {branch}.")
+
+
 def _has_gh():
     try:
         r = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
@@ -147,6 +195,14 @@ def main():
     ps.add_argument("--staged", action="store_true", help="commit only staged files")
     ps.add_argument("--dry-run", action="store_true")
     ps.set_defaults(func=cmd_ship)
+
+    pf = sub.add_parser("followup")
+    pf.add_argument("--message", "-m", required=True)
+    pf.add_argument("--ticket", default=None)
+    pf.add_argument("--staged", action="store_true", help="commit only staged files")
+    pf.add_argument("--dry-run", action="store_true")
+    pf.set_defaults(func=cmd_followup)
+
     args = p.parse_args()
     args.func(args)
 

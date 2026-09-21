@@ -46,6 +46,14 @@ test -f "$REPO/commands/research.md"
 test -f "$REPO/agents/researcher.md"
 test -f "$REPO/skills/research-template/SKILL.md"
 
+echo "== address-review assets present =="
+test -f "$REPO/commands/address-review.md"
+test -x "$BIN/echo-review-comments"
+test -f "$REPO/skills/address-review/SKILL.md"
+
+echo "== review-comments fetch fails open with no PR =="
+"$BIN/echo-review-comments" fetch --ticket FEAT-3816 | grep -q . && { echo "FAIL: fetch should print nothing with no PR"; exit 1; } || true
+
 echo "== research-path resolves (topic + ticket) =="
 "$BIN/echo-stage" research-path --topic "smoke topic" | grep -q ".echo/research/smoke-topic.md"
 "$BIN/echo-stage" research-path --ticket FEAT-3816 | grep -q ".echo/artifacts/FEAT-3816/research.md"
@@ -86,7 +94,7 @@ grep -qi "advisory" "$REPO/CLAUDE.md"
 sed -n '/## Using echo from OpenAI Codex/,$p' "$REPO/CLAUDE.md" | grep -qi "atlassian mcp"
 
 echo "== codex phase2: command skills present =="
-for n in flow research intent spec plan build verify review ship status approve next watch; do
+for n in flow research intent spec plan build verify review ship status approve next watch address-review; do
   test -f "$REPO/.agents/skills/echo-$n/SKILL.md"
   grep -q "^name:" "$REPO/.agents/skills/echo-$n/SKILL.md"
   grep -q "^description:" "$REPO/.agents/skills/echo-$n/SKILL.md"
