@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""echo-review-pr - GitHub PR review determinism for /echo:review (PR mode).
+
+Owns every gh/git call so the command and agent markdown stay thin. Three
+subcommands:
+  prepare --pr <url|number> [--base <branch>]
+            Resolve the PR in the current repo, fetch its base and head by the
+            fork-safe pull/<n>/head ref, add a detached worktree at the head,
+            and print one JSON line with
+            {number, owner, repo, base_ref, head_sha, worktree, diff_range,
+             title, body}. Fails open: no gh/auth/remote/PR -> print nothing,
+            exit 0. Any post-resolve failure (fetch, worktree add) removes the
+            partial worktree, prints nothing, and exits 0.
+  post    --pr <n> --worktree <path> --base <branch> --head <sha>
+            --input <findings.json> [--dry-run]
+            Validate the reviewer's findings against the PR diff and post one
+            advisory COMMENT review via `gh api --method POST`. A real post
+            re-resolves the current head (so a force-push between prepare and
+            post does not 422) and re-validates anchors; --dry-run skips the
+            re-resolve and all network and just prints the payload. Requires
+            --worktree; a missing/empty worktree exits 0. A genuine POST
+            failure exits 1; the script never exits 2 (reserved for hooks).
+  cleanup --worktree <path>
+            Remove the throwaway worktree (git worktree remove --force, with a
+            git worktree prune fallback). Fails open, exit 0.
+
+Standard library only; shells out to `gh` (via echo_common) and `git`. Bodies
+carry prose only, never diffs, secrets, or tokens, and are truncated to
+MAX_BODY. Never approves or requests changes: advisory COMMENT reviews only.
+"""
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
+import echo_common as ec  # noqa: E402
+
+
+# GitHub caps review and comment bodies; keep well under it and carry prose
+# only so a long finding can never balloon or leak a diff into the payload.
+MAX_BODY = 60000
+
+
+# ---------------------------------------------------------------------------
+# Pure functions (importable, unit-tested, no network)
+# ---------------------------------------------------------------------------
+
+def new_side_lines(diff_text):
+    """Parse a unified diff and return {new_path: set(line_numbers)} for every
+    RIGHT-side line (added and context) per new-file path. These are the only
+    lines a RIGHT-side inline comment can anchor to; LEFT-only (deleted) lines
+    are excluded, as are binary files and /dev/null (pure deletions)."""
+    result = {}
+    path = None
+    new_no = 0
+    # New-side lines still expected in the current hunk body. While > 0 we are
+    # inside a hunk, so a line starting with "--- "/"+++ " is diff content (a
+    # deleted or added line), not a file header. This keeps a deleted line whose
+    # text is "--- old comment" or an added "+++ ..." from ending the hunk and
+    # dropping the lines that follow.
+    remaining = 0
+    for line in (diff_text or "").splitlines():
+        if remaining <= 0:
+            # Outside a hunk body: headers are structural.
+            if line.startswith("+++ "):
+                p = line[4:].strip()
+                if p == "/dev/null":
+                    path = None
+                else:
+                    if p.startswith("b/"):
+                        p = p[2:]
+                    path = p
+                    result.setdefault(path, set())
+                continue
+            if line.startswith("--- "):
+                continue
+            if line.startswith("@@"):
+                # @@ -a,b +c,d @@ : c is the new-side start, d the new-side count
+                # (d defaults to 1 when the ",d" is omitted for a single line).
+                m = re.search(r"\+(\d+)(?:,(\d+))?", line)
+                if m:
+                    new_no = int(m.group(1))
+                    remaining = int(m.group(2)) if m.group(2) is not None else 1
+                else:
+                    new_no = 0
+                    remaining = 0
+                continue
+            continue  # outside a hunk and not a recognized header
+        # Inside a hunk body (remaining > 0): classify by the first char.
+        if line.startswith("-"):
+            continue  # left side; does not consume a new-side line
+        if line.startswith("\\"):
+            continue  # "\ No newline at end of file" marker
+        # context line (leading space), added line ("+"), or blank line: all
+        # consume one new-side line. A /dev/null target (path is None) still
+        # consumes the count but anchors nothing.
+        if path is not None:
+            result[path].add(new_no)
+        new_no += 1
+        remaining -= 1
+    return result
+
+
+def filter_findings(findings, anchors):
+    """Split findings into (kept, dropped). Keep only well-formed single-line
+    RIGHT-side findings whose path:line is present in anchors; everything else
+    (LEFT/deleted side, off-diff line, missing/non-int line, missing path,
+    empty body, non-dict entry) goes to dropped so nothing is lost."""
+    kept, dropped = [], []
+    for f in findings or []:
+        if not isinstance(f, dict):
+            dropped.append(f)
+            continue
+        path = f.get("path")
+        line = f.get("line")
+        side = f.get("side") or "RIGHT"
+        if isinstance(side, str):
+            side = side.upper()
+        body = f.get("body")
+        ok = (
+            isinstance(path, str) and path
+            and isinstance(line, int) and not isinstance(line, bool)
+            and side == "RIGHT"
+            and isinstance(body, str) and body.strip()
+            and line in anchors.get(path, set())
+        )
+        if ok:
+            kept.append(f)
+        else:
+            dropped.append(f)
+    return kept, dropped
+
+
+def _truncate(text, limit=MAX_BODY):
+    """Truncate prose to limit, appending a marker so the cut is visible."""
+    text = text or ""
+    if len(text) <= limit:
+        return text
+    marker = "\n...[truncated]"
+    return text[:max(0, limit - len(marker))] + marker
+
+
+def build_review_payload(head_sha, summary, kept, dropped):
+    """Build the advisory COMMENT review payload. kept findings become inline
+    comments anchored RIGHT; dropped findings are folded into the summary body
+    as prose so none are lost. Bodies are truncated to MAX_BODY and carry prose
+    only (never diffs, secrets, or tokens)."""
+    body = summary or ""
+    if dropped:
+        lines = ["", "Findings that could not be anchored to the diff:"]
+        for f in dropped:
+            if isinstance(f, dict):
+                loc = f.get("path") or "(general)"
+                ln = f.get("line")
+                if ln not in (None, ""):
+                    loc = f"{loc}:{ln}"
+                txt = f.get("body") or ""
+            else:
+                loc = "(malformed)"
+                txt = str(f)
+            lines.append(f"- {loc}: {ec.one_line(txt)}")
+        body = (body + "\n" + "\n".join(lines)) if body else "\n".join(lines)
+    comments = []
+    for f in kept:
+        comments.append({
+            "path": f["path"],
+            "line": f["line"],
+            "side": "RIGHT",
+            "body": _truncate(f.get("body") or ""),
+        })
+    return {
+        "commit_id": head_sha,
+        "event": "COMMENT",
+        "body": _truncate(body),
+        "comments": comments,
+    }
+
+
+# ---------------------------------------------------------------------------
+# git helper (fail open)
+# ---------------------------------------------------------------------------
+
+def _git(args, cwd):
+    """Run git in cwd; return the CompletedProcess on success (exit 0), else
+    None (git missing/hung, OS error, or non-zero exit). Fails open."""
+    try:
+        r = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                           text=True, timeout=ec.GH_CALL_TIMEOUT)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    return r if r.returncode == 0 else None
+
+
+def _safe_rmtree(path):
+    try:
+        shutil.rmtree(path)
+    except OSError:
+        pass
+
+
+def _is_safe_worktree(path):
+    """True only when path is a throwaway worktree this script created: it must
+    live under the system temp dir and carry the `echo-review-pr-` prefix. Any
+    other path is refused so cleanup can never rmtree or `git worktree remove`
+    an arbitrary directory."""
+    if not path:
+        return False
+    real = os.path.realpath(path)
+    tmp = os.path.realpath(tempfile.gettempdir())
+    try:
+        inside = os.path.commonpath([real, tmp]) == tmp
+    except ValueError:
+        return False  # different drives/roots -> not under the temp dir
+    if not inside:
+        return False
+    return os.path.basename(real).startswith("echo-review-pr-")
+
+
+def _read_findings(path):
+    """Read the reviewer's JSON array from path; [] on any error. The array is
+    the only untrusted input and post is the validator of record."""
+    if not path:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _summary_line(kept, dropped):
+    total = len(kept) + len(dropped)
+    if total == 0:
+        return "echo review: no findings."
+    return (f"echo review: {len(kept)} inline finding(s); "
+            f"{len(dropped)} could not be anchored and are summarized below.")
+
+
+# ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+
+def cmd_prepare(args):
+    root = ec.repo_root()
+    pr = ec.resolve_pr_by_number(args.pr, cwd=root)
+    if not pr:
+        return  # fail open: no gh/auth/remote/PR -> print nothing, exit 0
+    base_ref = args.base or pr["base_ref"]
+    number = pr["number"]
+    head_sha = pr["head_sha"]
+
+    # Unique, non-existent path so `git worktree add` can create it.
+    parent = tempfile.mkdtemp(prefix="echo-review-pr-")
+    _safe_rmtree(parent)
+    worktree = parent
+
+    if (_git(["fetch", "origin", base_ref], cwd=root) is None
+            or _git(["fetch", "origin", f"pull/{number}/head"], cwd=root) is None
+            or _git(["worktree", "add", "--detach", worktree, "FETCH_HEAD"],
+                    cwd=root) is None):
+        # Any post-resolve failure: remove the partial worktree, fail open.
+        _git(["worktree", "remove", "--force", worktree], cwd=root)
+        _safe_rmtree(worktree)
+        return
+
+    diff_range = f"origin/{base_ref}...{head_sha}" if head_sha else "FETCH_HEAD"
+    print(json.dumps({
+        "number": number,
+        "owner": pr["owner"],
+        "repo": pr["repo"],
+        "base_ref": base_ref,
+        "head_sha": head_sha,
+        "worktree": worktree,
+        "diff_range": diff_range,
+        "title": pr.get("title", ""),
+        "body": pr.get("body", ""),
+    }))
+
+
+def cmd_post(args):
+    worktree = args.worktree
+    if not worktree or not os.path.isdir(worktree):
+        return  # fail open: no worktree to diff against -> exit 0
+
+    findings = _read_findings(args.input)
+    base_ref = args.base
+    head_sha = args.head
+    owner = None
+    repo = None
+
+    if not args.dry_run:
+        # A real post needs an explicit base and head so diff_range can never
+        # degrade to origin/None...<sha> (which would drop every anchor).
+        if not base_ref or not head_sha:
+            sys.stderr.write("echo-review-pr: post needs --base and --head for "
+                             "a real post; skipping\n")
+            return  # fail open: exit 0, no network
+        # Re-resolve the head so a force-push between prepare and post does not
+        # 422 the review; owner/repo come from the same resolve.
+        root = ec.repo_root()
+        cur = ec.resolve_pr_by_number(args.pr, cwd=root)
+        if not cur:
+            return  # fail open: cannot reach gh -> no network attempted, exit 0
+        owner = cur.get("owner")
+        repo = cur.get("repo")
+        cur_head = cur.get("head_sha")
+        if cur_head and cur_head != head_sha:
+            # Refresh the worktree to the current head. If the fetch or checkout
+            # fails we must not fall through and diff a stale tree (that would
+            # post a degraded, all-dropped review); warn and skip the post.
+            if (_git(["fetch", "origin", f"pull/{args.pr}/head"],
+                     cwd=worktree) is None
+                    or _git(["checkout", "--detach", "FETCH_HEAD"],
+                            cwd=worktree) is None):
+                sys.stderr.write("echo-review-pr: could not refresh to the "
+                                 "current PR head; skipping post\n")
+                return  # fail open rather than post against a stale tree
+            head_sha = cur_head
+
+    diff_range = f"origin/{base_ref}...{head_sha}" if head_sha else "HEAD"
+    r = _git(["diff", diff_range], cwd=worktree)
+    diff_text = r.stdout if r is not None else ""
+    anchors = new_side_lines(diff_text)
+    kept, dropped = filter_findings(findings, anchors)
+    payload = build_review_payload(head_sha, _summary_line(kept, dropped),
+                                   kept, dropped)
+
+    if args.dry_run:
+        print(json.dumps(payload, indent=2))
+        return  # no network under dry-run
+
+    if not kept and not dropped:
+        # Nothing valid to post: touch no network, exit 0.
+        print(json.dumps(payload, indent=2))
+        return
+
+    fd, pf = tempfile.mkstemp(prefix="echo-review-pr-payload-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        endpoint = f"repos/{owner}/{repo}/pulls/{args.pr}/reviews"
+        resp = ec.gh(["api", "--method", "POST", endpoint, "--input", pf],
+                     cwd=worktree)
+    finally:
+        _unlink(pf)
+
+    if resp is None or resp.returncode != 0:
+        detail = resp.stderr.strip() if resp is not None else "gh not available"
+        sys.stderr.write(f"echo-review-pr: post failed: {detail}\n")
+        sys.exit(1)  # genuine POST failure -> exit 1 so the command reports it
+    print(f"posted advisory review on pull/{args.pr} "
+          f"({len(kept)} inline, {len(dropped)} summarized)")
+
+
+def cmd_cleanup(args):
+    worktree = args.worktree
+    if not _is_safe_worktree(worktree):
+        return  # refuse to remove an arbitrary path; fail open
+    root = ec.repo_root()
+    if _git(["worktree", "remove", "--force", worktree], cwd=root) is None:
+        _git(["worktree", "prune"], cwd=root)
+    _safe_rmtree(worktree)
+
+
+def _unlink(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+def main():
+    p = argparse.ArgumentParser(prog="echo-review-pr")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pp = sub.add_parser("prepare")
+    pp.add_argument("--pr", required=True)
+    pp.add_argument("--base", default=None)
+    pp.set_defaults(func=cmd_prepare)
+
+    po = sub.add_parser("post")
+    po.add_argument("--pr", required=True)
+    po.add_argument("--worktree", default=None)
+    po.add_argument("--base", default=None)
+    po.add_argument("--head", default=None)
+    po.add_argument("--input", default=None)
+    po.add_argument("--dry-run", action="store_true")
+    po.set_defaults(func=cmd_post)
+
+    pc = sub.add_parser("cleanup")
+    pc.add_argument("--worktree", default=None)
+    pc.set_defaults(func=cmd_cleanup)
+
+    args = p.parse_args()
+    args.func(args)
+
+
+def _run_main():
+    """Enforce the exit-code contract (spec req 11): the script never exits 2
+    (reserved for blocking hooks). argparse exits 2 on a usage error, so map any
+    SystemExit other than the genuine POST-failure exit 1 to 0, and swallow any
+    uncaught exception to a fail-open exit 0."""
+    try:
+        main()
+    except SystemExit as e:
+        if e.code == 1:
+            raise  # genuine gh POST failure -> let the command see exit 1
+        sys.exit(0)
+    except Exception as e:  # noqa: BLE001 - fail open, never exit 2
+        sys.stderr.write(f"echo-review-pr: {e}\n")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    _run_main()

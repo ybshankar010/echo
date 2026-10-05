@@ -49,6 +49,7 @@ test -f "$REPO/skills/research-template/SKILL.md"
 echo "== address-review assets present =="
 test -f "$REPO/commands/address-review.md"
 test -x "$BIN/echo-review-comments"
+test -x "$BIN/echo-review-pr"
 test -f "$REPO/skills/address-review/SKILL.md"
 
 echo "== review-comments fetch fails open with no PR =="

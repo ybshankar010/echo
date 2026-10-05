@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(REPO, "bin")
@@ -18,6 +19,17 @@ def _load_watch_module():
     path = os.path.join(BIN, "echo-watch")
     loader = importlib.machinery.SourceFileLoader("echo_watch", path)
     spec = importlib.util.spec_from_loader("echo_watch", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def _load_review_pr_module():
+    """Import bin/echo-review-pr (no .py extension) as a module so its pure
+    functions can be unit-tested in-process without network."""
+    path = os.path.join(BIN, "echo-review-pr")
+    loader = importlib.machinery.SourceFileLoader("echo_review_pr", path)
+    spec = importlib.util.spec_from_loader("echo_review_pr", loader)
     mod = importlib.util.module_from_spec(spec)
     loader.exec_module(mod)
     return mod
@@ -905,6 +917,224 @@ def test_review_comments_resolve_dry_run_no_network(tmp_path):
     assert "resolveReviewThread" in r.stdout
     # --dry-run must not stamp the ledger (no network, no side effect).
     assert ec.load_thread_ledger("FEAT-3816", root) == {}
+
+
+# ---- lib: resolve_pr_by_number ----
+
+def test_resolve_pr_by_number_fail_closed(tmp_path):
+    # No gh/PR in a fresh repo -> resolve returns None (fail closed).
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    assert ec.resolve_pr_by_number("1", cwd=root) is None
+
+
+def test_parse_pr_view_full_normalizes():
+    text = json.dumps({
+        "number": 7,
+        "baseRefName": "main",
+        "headRefName": "feat/x",
+        "headRefOid": "abc123",
+        "url": "https://example/pr/7",
+        "isCrossRepository": True,
+        "title": "T",
+        "body": "B",
+    })
+    out = ec._parse_pr_view_full(text)
+    assert out["number"] == 7
+    assert out["base_ref"] == "main"
+    assert out["head_ref"] == "feat/x"
+    assert out["head_sha"] == "abc123"
+    assert out["is_cross_repository"] is True
+    assert out["title"] == "T" and out["body"] == "B"
+    # No PR number -> None (fail closed).
+    assert ec._parse_pr_view_full(json.dumps({"url": "x"})) is None
+    assert ec._parse_pr_view_full("not json") is None
+
+
+def test_parse_owner_repo_from_url():
+    assert ec._parse_owner_repo_from_url(
+        "https://github.com/acme/widgets/pull/7") == {
+        "owner": "acme", "repo": "widgets"}
+    assert ec._parse_owner_repo_from_url(
+        "https://ghe.corp.net/team/svc/issues/3") == {
+        "owner": "team", "repo": "svc"}
+    # No owner/repo path -> None, so a plain PR number keeps using the cwd repo.
+    assert ec._parse_owner_repo_from_url("") is None
+    assert ec._parse_owner_repo_from_url("not a url") is None
+    assert ec._parse_owner_repo_from_url(None) is None
+
+
+def test_reconcile_pr_repo_fail_closed_on_mismatch():
+    cwd_repo = {"owner": "acme", "repo": "widgets"}
+    # URL names a different repo than the cwd repo -> None (fail closed), so the
+    # fetch/post never run against the wrong PR.
+    parsed = {"url": "https://github.com/evil/other/pull/9"}
+    assert ec._reconcile_pr_repo(parsed, cwd_repo) is None
+    # URL matches the cwd repo -> proceed with the url's owner/repo.
+    parsed_ok = {"url": "https://github.com/acme/widgets/pull/9"}
+    assert ec._reconcile_pr_repo(parsed_ok, cwd_repo) == cwd_repo
+    # No url (plain PR number) -> fall back to the cwd repo.
+    assert ec._reconcile_pr_repo({"url": ""}, cwd_repo) == cwd_repo
+
+
+# ---- CLI: echo-review-pr (pure functions) ----
+
+_SAMPLE_DIFF = (
+    "diff --git a/foo.py b/foo.py\n"
+    "--- a/foo.py\n"
+    "+++ b/foo.py\n"
+    "@@ -1,3 +1,4 @@\n"
+    " line1\n"
+    "-old2\n"
+    "+new2\n"
+    "+new3\n"
+    " line4\n"
+)
+
+
+def test_new_side_lines_parses_right_side():
+    mod = _load_review_pr_module()
+    anchors = mod.new_side_lines(_SAMPLE_DIFF)
+    # new file foo.py: context line1 (1), added new2 (2), new3 (3), context line4 (4).
+    assert anchors == {"foo.py": {1, 2, 3, 4}}
+
+
+def test_new_side_lines_handles_dashdash_content_in_hunk():
+    mod = _load_review_pr_module()
+    # A deleted line whose content starts with "--- " (a SQL/Lua/Haskell comment
+    # rendered in the diff as "--- old comment") must NOT be mistaken for a file
+    # header: the hunk continues and the later context/added lines still anchor.
+    diff = (
+        "diff --git a/q.sql b/q.sql\n"
+        "--- a/q.sql\n"
+        "+++ b/q.sql\n"
+        "@@ -1,4 +1,4 @@\n"
+        " SELECT 1\n"
+        "--- old comment\n"
+        "+-- new comment\n"
+        " SELECT 2\n"
+        " SELECT 3\n"
+    )
+    anchors = mod.new_side_lines(diff)
+    # new-side lines: SELECT 1 (1), +-- new comment (2), SELECT 2 (3), SELECT 3 (4).
+    assert anchors == {"q.sql": {1, 2, 3, 4}}
+
+
+def test_filter_findings_keeps_on_diff_right_drops_rest():
+    mod = _load_review_pr_module()
+    anchors = {"foo.py": {2, 3}}
+    findings = [
+        {"path": "foo.py", "line": 2, "side": "RIGHT", "body": "keep me"},
+        {"path": "foo.py", "line": 99, "side": "RIGHT", "body": "off diff"},
+        {"path": "foo.py", "line": 2, "side": "LEFT", "body": "left side"},
+        {"path": "foo.py", "line": "x", "body": "malformed line"},
+        "not a dict",
+    ]
+    kept, dropped = mod.filter_findings(findings, anchors)
+    assert len(kept) == 1 and kept[0]["body"] == "keep me"
+    assert len(dropped) == 4
+
+
+def test_build_review_payload_comment_folds_dropped_and_truncates():
+    mod = _load_review_pr_module()
+    kept = [{"path": "foo.py", "line": 2, "side": "RIGHT", "body": "inline note"}]
+    dropped = [{"path": "foo.py", "line": 99, "body": "could not anchor"}]
+    payload = mod.build_review_payload("sha123", "summary", kept, dropped)
+    assert payload["event"] == "COMMENT"
+    assert payload["commit_id"] == "sha123"
+    assert len(payload["comments"]) == 1
+    assert payload["comments"][0]["line"] == 2
+    assert payload["comments"][0]["side"] == "RIGHT"
+    # Dropped finding is folded into the body, never lost.
+    assert "could not anchor" in payload["body"]
+    # Over-long body is truncated to MAX_BODY.
+    big = mod.build_review_payload("s", "x" * (mod.MAX_BODY + 5000), [], [])
+    assert len(big["body"]) <= mod.MAX_BODY
+    assert big["body"].endswith("[truncated]")
+
+
+# ---- CLI: echo-review-pr (fail open, no network) ----
+
+def test_review_pr_prepare_fail_open_no_gh(tmp_path):
+    # No gh/PR in a fresh repo -> prepare prints nothing, exit 0 (fail open).
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"),
+              "prepare", "--pr", "1"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_review_pr_post_dry_run_no_network(tmp_path):
+    # dry-run prints a payload and exits 0 without touching the network, even
+    # when the diff range cannot resolve (no origin -> empty anchors).
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    findings = os.path.join(root, "findings.json")
+    with open(findings, "w", encoding="utf-8") as fh:
+        json.dump([{"path": "foo.py", "line": 2, "side": "RIGHT", "body": "x"}], fh)
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"),
+              "post", "--pr", "1", "--worktree", root, "--base", "main",
+              "--head", "deadbeef", "--input", findings, "--dry-run"], root)
+    assert r.returncode == 0
+    payload = json.loads(r.stdout)
+    assert payload["event"] == "COMMENT"
+    assert payload["commit_id"] == "deadbeef"
+
+
+def test_review_pr_post_no_worktree_exits_zero(tmp_path):
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"),
+              "post", "--pr", "1"], root)
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""
+
+
+def test_review_pr_cleanup_missing_worktree_exits_zero(tmp_path):
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"),
+              "cleanup", "--worktree", os.path.join(root, "nope")], root)
+    assert r.returncode == 0
+
+
+def test_review_pr_post_missing_required_arg_exits_zero(tmp_path):
+    # argparse exits 2 on a usage error, but the script must never exit 2
+    # (spec req 11, reserved for blocking hooks): `post` with no --pr exits 0.
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"), "post"], root)
+    assert r.returncode == 0
+
+
+def test_review_pr_cleanup_refuses_non_temp_path(tmp_path):
+    # cleanup must refuse a path that is not a throwaway worktree this script
+    # created: no echo-review-pr- prefix -> it is left untouched, exit 0.
+    root = str(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=root)
+    precious = os.path.join(root, "precious")
+    os.makedirs(precious)
+    sentinel = os.path.join(precious, "keep.txt")
+    with open(sentinel, "w", encoding="utf-8") as fh:
+        fh.write("do not delete")
+    r = _run(["python3", os.path.join(BIN, "echo-review-pr"),
+              "cleanup", "--worktree", precious], root)
+    assert r.returncode == 0
+    assert os.path.exists(sentinel)  # refused, nothing removed
+
+
+def test_is_safe_worktree_guards():
+    mod = _load_review_pr_module()
+    # Outside the temp dir -> refused regardless of name.
+    assert mod._is_safe_worktree("/etc/passwd") is False
+    assert mod._is_safe_worktree("") is False
+    # Under the temp dir but no echo-review-pr- prefix -> refused.
+    bad = os.path.join(tempfile.gettempdir(), "random-dir")
+    assert mod._is_safe_worktree(bad) is False
+    # Under the temp dir with the prefix this script creates -> allowed.
+    good = os.path.join(tempfile.gettempdir(), "echo-review-pr-xyz")
+    assert mod._is_safe_worktree(good) is True
 
 
 # ---- CLI: echo-git followup ----

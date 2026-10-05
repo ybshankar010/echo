@@ -1,39 +1,47 @@
 Ticket: FEAT-6833
 Stage: Build (checker report)
-Reviewer: echo:reviewer over the working diff
-Iterations: 1 builder pass, reviewer clean
+Reviewer: echo:reviewer over the working diff + untracked bin/echo-review-pr
+Iterations: 2 builder passes (implement, then fix), reviewer clean of important findings
 
-# YAGNI pass build review
+# Extend /echo:review to review and comment on a GitHub PR - build review
 
-Review used the inline default passes (no root REVIEW.md exists) plus templates/REVIEW.md
-as the reference. Passes applied: bugs, security, compliance, YAGNI.
+Passes applied: bugs, security, compliance, YAGNI (inline defaults; no root REVIEW.md).
 
 ## Important findings
-None.
+None remaining. The first reviewer pass raised two important issues, both fixed in the
+second builder pass and confirmed resolved:
+1. Wrong-repo / wrong-PR on a URL target: `_parse_owner_repo_from_url` + `_reconcile_pr_repo`
+   in lib/echo_common.py now fail closed (return None) when a PR URL's repo differs from the
+   cwd repo; a plain PR number still uses the cwd repo.
+2. `new_side_lines` in bin/echo-review-pr now parses the `@@ -a,b +c,d @@` header and tracks
+   remaining new-side lines, so a deleted `--- old` or added `+++` line inside a hunk no
+   longer ends the hunk or resets the path.
 
-## Spec and plan compliance
-Change matches both spec.md and plan.md.
-- Req 1 and 2: templates/REVIEW.md adds the YAGNI bullet and the "YAGNI: do not flag"
-  section; wording identical to the plan's exact wording.
-- Req 3 and 4: agents/reviewer.md carries the flag rule, the guard, the "quality nits,
-  not important" note, and the opt-out note; the frontmatter description names YAGNI.
-- Req 5 and 6: the pass enumeration is `(bugs, security, compliance, YAGNI)` at
-  commands/review.md:10 and commands/build.md:34. All four sites agree.
-- The two em dashes the plan listed (reviewer.md:27, review.md:13) are gone;
-  `grep "—"` over the four files returns nothing (rc=1).
-- No changes under bin/, lib/, or tests/. Diff touches only the four docs plus .echo/
-  artifacts.
+Also fixed in the same pass: exit-code contract (argparse exit 2 and uncaught exceptions map
+to 0 via `_run_main`; only genuine gh POST failure exits 1), `cleanup` path guard
+(`_is_safe_worktree` restricts to the temp dir + `echo-review-pr-` prefix), required
+`--base`/`--head` for a real post, and stale-head refresh skipping the post on a failed
+fetch/checkout.
+
+## Spec / plan compliance
+Matches spec reqs 1-12 and plan: executable bit, prepare/post/cleanup subcommands, fail-open
+prepare, unconditional cleanup in the command markdown, Codex parity (YAGNI added to both
+mirrors), and the PR-mode compliance rescope in agents/reviewer.md.
 
 ## Nits (none blocking)
-1. commands/review.md:10 and commands/build.md:34: the edit pushed the line past the
-   neighbouring wrap width (cosmetic only).
-2. agents/reviewer.md:20-28: YAGNI is described as a "nit" yet reads as a peer of the
-   other passes. Code clearly states findings are nits, matching the spec. Not a defect.
-3. Accepted limitation from the spec stands: a target repo that copied the old template
-   keeps its own REVIEW.md with no YAGNI, so under the opt-out rule it will not get the
-   pass until it re-copies the template. Documented, not a bug.
+- `git fetch origin pull/<n>/head` assumes `origin` is the gh-resolved repo; a fork origin
+  vs upstream could pull a different PR with the same number (not covered by the repo
+  reconcile). Follow-up candidate.
+- `post --pr` is assumed a bare number; `prepare` always emits the number, so the normal flow
+  is fine, but a URL passed directly to `post` is unvalidated.
+- `--dry-run` with `--head` but no `--base` yields an empty `origin/None...` anchor set (all
+  findings dropped in the printed payload); no network touched.
+- `post` does not apply `_is_safe_worktree` (read-only git/gh in that cwd; low risk).
+- C-quoted `+++` paths (special characters) are not unquoted, so such files fold into the
+  summary rather than anchoring (safe degradation).
 
-## Out of scope (not reviewed)
-- .echo/research/cursor-pstack-plugin.md is untracked and outside the four-file focus.
-- pytest and smoke.sh not run by the reviewer; nothing determinism-facing changed (the
-  builder ran them: 95 passed, smoke green).
+## Verification observed
+- `python3 -m pytest tests/test_echo.py -q`: 110 passed.
+- `bash tests/smoke.sh`: ALL SMOKE CHECKS PASSED.
+- `python3 -m py_compile lib/echo_common.py bin/echo-*`: exit 0.
+- No em dashes in the changed files.

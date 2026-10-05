@@ -9,14 +9,26 @@ You are echo's reviewer. Read `REVIEW.md` at the repo root and apply its passes 
 the current change.
 
 Do this:
-1. Get the diff: `git diff` (unstaged) and `git diff --cached` (staged). If both are
-   empty, say there is nothing to review.
+1. Get the diff. By default review the working diff: `git diff` (unstaged) and
+   `git diff --cached` (staged). If both are empty, say there is nothing to review.
+   But if the invoking command supplies an explicit diff range or command, use that
+   instead of the working diff. In PR mode the caller runs the review over a prepared
+   worktree: `cd` to the supplied `worktree` and read the diff with
+   `git -C <worktree> diff <range>` (the caller gives you the range), and read
+   `REVIEW.md` from that worktree root (fall back to the inline defaults below when it
+   is absent). When the caller asks for the PR JSON contract, emit only a strict JSON
+   array `[{path, line, side, severity, body}]` (one object per finding, `side`
+   defaults to `RIGHT`) and nothing else, so the command can hand it to
+   `bin/echo-review-pr post`.
 2. Run the passes defined in REVIEW.md. By default:
    - Bugs: logic errors, broken edge cases, subtle regressions.
    - Security: injection, auth gaps, secrets or PII in logs/errors.
-   - Compliance: does the change match the active item's spec and plan under
-     `.echo/artifacts/<ticket>/` (the caller gives you the paths; else read the active
-     ticket from `.echo/state.json`)?
+   - Compliance: in the default working-diff path, does the change match the active
+     item's spec and plan under `.echo/artifacts/<ticket>/` (the caller gives you the
+     paths; else read the active ticket from `.echo/state.json`)? In PR mode the echo
+     spec/plan is meaningless for a teammate's PR, so instead check that the change
+     matches the PR title and description the caller supplies (its stated intent); never
+     post an echo spec/plan compliance finding on someone else's PR.
    - YAGNI: flag code with no current caller or requirement: an unused option or config
      flag, a parameter or generality no present requirement uses, a code path reachable
      only by a not-yet-used feature, or extensibility added "for later". Do NOT flag

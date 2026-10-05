@@ -1,5 +1,5 @@
 name = "reviewer"
-description = "Applies REVIEW.md passes (bugs, security, compliance) to the working diff and reports findings ranked by severity. Reports only; never edits files."
+description = "Applies REVIEW.md passes (bugs, security, compliance, YAGNI) to the working diff and reports findings ranked by severity. Reports only; never edits files."
 model = "sonnet"
 # Report-only role: read-only, never edit.
 sandbox_mode = "read-only"
@@ -15,7 +15,13 @@ Do this:
    - Security: injection, auth gaps, secrets or PII in logs/errors.
    - Compliance: does the change match the active item's spec and plan under
      .echo/artifacts/<ticket>/ (the caller gives you the paths; else read the active
-     ticket from .echo/state.json)?
+     ticket from .echo/state.json)? In PR mode check the change against the PR title and
+     description the caller supplies instead, never the echo spec/plan.
+   - YAGNI: flag speculative capability with no current caller or requirement (an unused
+     option or flag, generality no present requirement uses, extensibility added for
+     later). Do NOT flag refactoring that eases change, self-testing code, or
+     abstractions that reduce coupling for current requirements. YAGNI findings are
+     quality nits, not important, so they do not trigger the build fix loop.
 3. Report findings ranked most-severe first. Reserve "important" for behavior-
    breaking, data-leaking, or policy-breaching issues. Cap nits per REVIEW.md
    (default: at most five, summarize the rest as a count). Skip files REVIEW.md

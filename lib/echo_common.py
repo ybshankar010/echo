@@ -1,4 +1,4 @@
-"""echo_common — shared helpers for the echo plugin CLIs.
+"""echo_common - shared helpers for the echo plugin CLIs.
 
 Determinism lives here: repo/.echo paths, the Jira ticket regex, the stage list,
 JSON state/config I/O, multi-stack detection, and a thin git runner. Standard
@@ -259,7 +259,7 @@ def now_iso() -> str:
 
 
 # ---------------------------------------------------------------------------
-# State (JSON)  — owned exclusively by echo-stage / echo-* CLIs
+# State (JSON) - owned exclusively by echo-stage / echo-* CLIs
 # ---------------------------------------------------------------------------
 
 def _read_json(path: str) -> Optional[dict]:
@@ -308,7 +308,7 @@ def save_config(cfg: dict, root: Optional[str] = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Jira comment ledger — a committed, per-ticket record of posted events so the
+# Jira comment ledger - a committed, per-ticket record of posted events so the
 # command layer never posts the same Jira comment twice. Fails open (returns {}
 # on a missing/corrupt ledger) so a bad file at worst re-posts one event once.
 # ---------------------------------------------------------------------------
@@ -414,6 +414,112 @@ def resolve_pr(cwd: Optional[str] = None) -> Optional[dict]:
         "owner": repo["owner"],
         "repo": repo["repo"],
     }
+
+
+def gh(args, cwd=None, timeout=GH_CALL_TIMEOUT):
+    """Run `gh` with args; return the CompletedProcess, or None on any failure
+    (gh missing, timeout, OS error). Fails open so callers never raise on a
+    missing or hung gh. Auth is delegated to gh; this never reads or logs a
+    token. Shared plumbing so new CLIs need no private `_gh`."""
+    try:
+        return subprocess.run(["gh", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def gh_json(args, cwd=None):
+    """Run `gh args` and parse stdout as JSON. Return the parsed object, or
+    None on any failure (gh missing/hung, non-zero exit, unparseable output)."""
+    r = gh(args, cwd=cwd)
+    if r is None or r.returncode != 0:
+        return None
+    try:
+        return json.loads(r.stdout)
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_pr_view_full(text: str) -> Optional[dict]:
+    """Pure parse of `gh pr view <pr> --json
+    number,baseRefName,headRefName,headRefOid,url,isCrossRepository,title,body`
+    into a normalized dict, or None if the payload lacks a PR number."""
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(data, dict) or "number" not in data:
+        return None
+    return {
+        "number": data.get("number"),
+        "base_ref": data.get("baseRefName", ""),
+        "head_ref": data.get("headRefName", ""),
+        "head_sha": data.get("headRefOid", ""),
+        "url": data.get("url", ""),
+        "is_cross_repository": bool(data.get("isCrossRepository", False)),
+        "title": data.get("title", ""),
+        "body": data.get("body", ""),
+    }
+
+
+def _parse_owner_repo_from_url(url) -> Optional[dict]:
+    """Pure parse of a GitHub PR/issue url like
+    https://github.com/<owner>/<repo>/pull/<n> into {owner, repo}, or None when
+    the url carries no owner/repo path. Host-agnostic (works for GH Enterprise)
+    because it keys off the /pull/ or /issues/ segment, not the hostname."""
+    if not isinstance(url, str) or not url:
+        return None
+    m = re.search(r"[:/]([^/]+)/([^/]+)/(?:pull|issues)/\d+", url)
+    if not m:
+        return None
+    return {"owner": m.group(1), "repo": m.group(2)}
+
+
+def _reconcile_pr_repo(parsed: dict, cwd_repo: dict) -> Optional[dict]:
+    """Reconcile the PR url's owner/repo against the cwd repo. `gh pr view <url>`
+    resolves the url's repo while the fetch/post run against the cwd repo, so a
+    url pointing at a different repo would silently review or POST the wrong PR.
+    When the url names a repo that differs from the cwd repo, return None (fail
+    closed). Otherwise return {owner, repo} (the url's when present, else cwd's),
+    so a plain PR number keeps working against the cwd repo. Pure."""
+    url_repo = _parse_owner_repo_from_url(parsed.get("url", ""))
+    if url_repo is not None:
+        if (url_repo["owner"] != cwd_repo["owner"]
+                or url_repo["repo"] != cwd_repo["repo"]):
+            return None
+        return url_repo
+    return cwd_repo
+
+
+def resolve_pr_by_number(pr, cwd: Optional[str] = None) -> Optional[dict]:
+    """Resolve an explicit PR (url or number) in the repo at cwd into
+    {number, owner, repo, base_ref, head_sha, head_ref, is_cross_repository,
+    title, body}, or None. Runs `gh pr view <pr> --json ...` plus
+    `gh repo view --json owner,name`. Fails closed to None on any error (no gh,
+    no auth, no remote, unresolvable PR) and on a url-vs-cwd repo mismatch, so a
+    url pointing at a different repo never reviews or POSTs the wrong PR.
+    Separate from the branch-based resolve_pr, which is left unchanged."""
+    cwd = cwd or repo_root()
+    r = gh(["pr", "view", str(pr), "--json",
+            "number,baseRefName,headRefName,headRefOid,url,"
+            "isCrossRepository,title,body"], cwd=cwd)
+    if r is None or r.returncode != 0:
+        return None
+    parsed = _parse_pr_view_full(r.stdout)
+    if parsed is None:
+        return None
+    r2 = gh(["repo", "view", "--json", "owner,name"], cwd=cwd)
+    if r2 is None or r2.returncode != 0:
+        return None
+    repo = _parse_repo_view(r2.stdout)
+    if repo is None:
+        return None
+    final = _reconcile_pr_repo(parsed, repo)
+    if final is None:
+        return None  # url names a different repo than cwd -> fail closed
+    parsed["owner"] = final["owner"]
+    parsed["repo"] = final["repo"]
+    return parsed
 
 
 def _thread_nodes(data) -> list:
