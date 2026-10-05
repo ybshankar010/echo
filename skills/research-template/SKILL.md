@@ -27,6 +27,7 @@ every claim in it is grounded.
   than an honest "unknown".
 - Prefer primary sources (the code, the doc, the system) over summaries of them.
 - No em dashes; lean and concrete.
+- Write the prose in Simplified Technical English; load the `echo:ste-writing` skill.
 
 Write to the path `/echo:research` resolved for you (ticket ->
 `.echo/artifacts/<ticket>/research.md`; topic -> `.echo/research/<slug>.md`). Research is

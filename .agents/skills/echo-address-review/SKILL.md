@@ -15,6 +15,10 @@ second PR and never self-approves a gate.
 Skills have no structured arguments. Read the ticket id (`[A-Z]+-[0-9]+`) from the branch and
 any focus text from what the user typed; never fabricate a ticket.
 
+Write the `-m` descriptive prose and any Jira comment prose in Simplified Technical English
+(load the `ste-writing` skill). Keep the `TICKET: ` prefix, the `Ticket: <id>` line, and the
+Co-Authored-By trailer exactly as policy requires; STE guides only the prose around them.
+
 ## Steps
 1. Derive the ticket from the checked-out branch and confirm the gate is open (`python3
    bin/echo-stage status`). The branch ticket is what `ec.ticket_from_branch()` returns. If a

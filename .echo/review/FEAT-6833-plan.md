@@ -1,15 +1,20 @@
-# Critic re-review: FEAT-6833 plan.md vs spec.md
+# Critic review: FEAT-6833 plan vs spec
 
-Verdict: no blocking gaps remain. All five prior findings are resolved.
+Verdict: no blocking gaps. Plan covers spec requirements 1-9 and acceptance criteria 1-9.
 
-## Resolved
-1. (Blocker) Spec req 8: plan Files list and step 3 now rework reviewer.md step 2 compliance bullet for PR mode (check caller-supplied PR title/description; working-diff path keeps spec/plan check). Step 4 passes title/description to the reviewer. Proof 7 greps "PR title" in both agents/reviewer.md and commands/review.md.
-2. Reviewer cwd/REVIEW.md: step 3 states `git -C <worktree> diff <range>` and REVIEW.md read from worktree root; step 4 sets reviewer cwd to the worktree.
-3. post --dry-run test: Proof 3 names a fixture (temp git repo with one-commit diff, or injected diff string); step 2 and Proof 3 specify missing --worktree exits 0.
-4. commands/review.md details: step 4 covers parsing --comment/--base, empty prepare (report and stop), temp findings file and its removal, owner/repo/number in preview, unconditional cleanup.
-5. prepare post-resolve failures: step 2 states fetch/worktree-add failure removes partial worktree, prints nothing, exits 0.
+## Verified
+- skills/ has 4 template skills plus address-review; the four .agents/skills/*-template are symlinks.
+- echo-ship, echo-review, echo-address-review are real directories with SKILL.md. .agents/skills/ste-writing does not exist yet (new symlink is correct).
+- commands/ship.md and address-review.md already name the Co-Authored-By trailer; review.md spawns the reviewer (lines 16, 33).
+- plugin.json is 0.6.0. smoke.sh template loop is at lines 115-117. CLAUDE.md has the no-em-dash line (49).
+- bin/echo-git, lib/, recap untouched; consistent with spec.
 
-## Nits (non-blocking)
-- Proof 7 is a keyword grep, so it proves presence of wording, not correct semantics.
-- `post` in the spec takes `--base`/`--head`; step 2 does not list them explicitly, so make sure they are implemented (dry-run needs a range to diff).
-- `.codex/agents/reviewer.toml` gets no PR range/JSON contract; acceptable per spec req 12.
+## Important (non-blocking)
+1. skills/address-review/SKILL.md is a real skill that the address-review command loads and that governs Jira comment and reply prose. Neither spec nor plan mentions it. Decide: add the STE pointer there too, or note it as out of scope. Traces to spec Req 4.
+2. README.md line ~119 says Codex ports are "the four template skills". After the change there are five skill dirs; step 5 should update that sentence, not only "name the skill". .agents/skills/README.md may also list skills; check it.
+3. Proof 3 and Proof 6 only prove a string match. They do not prove the Co-Authored-By trailer and ticket prefix lines survive. Add a diff check that the edits are additions only (git diff --cached --numstat shows 0 deletions on those files).
+
+## Nits
+- Order-of-work step 8 is "Run Proof" as one checkbox for 9 checks; fine, but Proof step 8 (em dash) needs git add -A first. State that ordering in step 8.
+- Step 2 says "Rules area"; skills/address-review and templates each have a "No em dashes" rule line. Name that as the insertion point.
+- Spec Req 1 lists themes without "warnings and cautions" wording; plan adds it. Minor mismatch, harmless.

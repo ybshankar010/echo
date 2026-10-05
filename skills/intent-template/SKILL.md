@@ -23,6 +23,7 @@ committed, reviewable artifact. Keep it short and honest; it is the seed of the 
 - One ticket per intent. If the work spans tickets, ask which one this is.
 - Write for a reviewer who has five minutes: lead with the problem and outcome.
 - No em dashes; keep it lean and concrete.
+- Write the prose in Simplified Technical English; load the `echo:ste-writing` skill.
 
 Write the file to `.echo/artifacts/<ticket>/intent.md` (artifacts are scoped per ticket
 so separate work items never overwrite each other; the `Artifacts:` line from

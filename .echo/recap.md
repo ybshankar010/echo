@@ -1,7 +1,7 @@
 <!-- echo:auto — regenerated each session Stop -->
-- Updated: 2026-10-05T07:34:03Z
-- Item: FEAT-6833 — Extend /echo:review to review and comment on a GitHub PR
-- Stage: done (gate: n/a)
-- Branch: FEAT-6833/review-pr-extension
-- Last commit: f180c7d FEAT-6833: Mark review-pr extension loop complete (ship -> done)
-- Working tree clean
+- Updated: 2026-10-05T07:58:15Z
+- Item: FEAT-6833 — Write echo artifacts in Simplified Technical English (ASD-STE100)
+- Stage: ship (gate: pending)
+- Branch: FEAT-6833/ste-artifacts
+- Last commit: 17e646e FEAT-6833: Sync echo capture state (episodes, recap)
+- Uncommitted changes (27): .agents/skills/echo-address-review/SKILL.md, .agents/skills/echo-review/SKILL.md, .agents/skills/echo-ship/SKILL.md, .agents/skills/ste-writing, .claude-plugin/plugin.json, .echo/artifacts/FEAT-6833/intent.md, .echo/artifacts/FEAT-6833/plan.md, .echo/artifacts/FEAT-6833/spec.md, .echo/episodes.jsonl, .echo/recap.md ...

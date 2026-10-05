@@ -7,6 +7,8 @@ Review a change before shipping. With no argument, review the local working diff
 report only. With a PR target, review that pull request's diff; add `--comment` to
 publish the findings as one advisory GitHub review after a previewed confirm.
 
+Write the reviewer summary prose in Simplified Technical English (load `echo:ste-writing`).
+
 Branch on `$ARGUMENTS`:
 
 ## No argument: working-diff review (unchanged)

@@ -5,6 +5,10 @@ argument-hint: -m "commit message" [--title "PR title"] [--desc slug] [--dry-run
 
 Run the Ship stage for the active echo work item: $ARGUMENTS
 
+Write the `-m` descriptive prose in Simplified Technical English (load `echo:ste-writing`).
+Keep the `TICKET: ` prefix, the `Ticket: <id>` body line, and the Co-Authored-By trailer
+exactly as policy requires; STE guides only the prose around them.
+
 1. Verify there is a fresh passing verification for the active item (check
    `.echo/verify/<ticket>.md` or run `/echo:verify`). If not green, tell me and stop —
    do not ship unverified work.

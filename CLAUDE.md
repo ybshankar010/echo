@@ -47,6 +47,8 @@ through echo's own loop instead of editing ad hoc. The active work item lives in
 - Every gate FAILS OPEN when it cannot map an active item (never brick a repo).
 - Ticket regex is `[A-Z]+-[0-9]+`; never fabricate a ticket id (organization policy).
 - No em dashes in user-facing strings or docs.
+- Write artifact and flow prose in Simplified Technical English (ASD-STE100); load the
+  `echo:ste-writing` skill. Applies to prose only, never to code, paths, or ticket ids.
 
 ## Things to get right
 - Hooks block with exit code 2; anything else must exit 0 or it looks like a failure.

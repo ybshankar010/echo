@@ -23,6 +23,7 @@ approved `intent.md`. Policy is applied while writing, not discovered in late re
 - Prefer reusing existing utilities/patterns over new ones; name them.
 - Make acceptance criteria concrete enough to become tests.
 - No em dashes; lean and concrete.
+- Write the prose in Simplified Technical English; load the `echo:ste-writing` skill.
 
 Write to `.echo/artifacts/<ticket>/spec.md` (artifacts are scoped per ticket; the
 `Artifacts:` line from `echo-stage status` shows the folder), then

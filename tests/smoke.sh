@@ -117,6 +117,12 @@ for t in intent-template plan-template research-template spec-template; do
   test -e "$REPO/.agents/skills/$t/SKILL.md"
 done
 
+echo "== ste-writing skill present and mirrored =="
+test -f "$REPO/skills/ste-writing/SKILL.md"
+grep -q "^name:" "$REPO/skills/ste-writing/SKILL.md"
+grep -q "^description:" "$REPO/skills/ste-writing/SKILL.md"
+test -e "$REPO/.agents/skills/ste-writing/SKILL.md"
+
 echo "== codex phase2: limitations doc has required substance =="
 R="$REPO/.agents/skills/README.md"; test -f "$R"
 for s in "prose-driven" "not enforced by Codex" "no structured arguments" "advisory" "unverified" "install-hooks" "not verified in a live Codex session"; do

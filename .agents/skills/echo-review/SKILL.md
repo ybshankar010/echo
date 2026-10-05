@@ -14,6 +14,9 @@ target, review the working diff (below). A PR target is a PR url or number; `--c
 opts in to posting; `--base <branch>` overrides the base. Read the ticket id
 (`[A-Z]+-[0-9]+`) from what the user typed if relevant; never fabricate a ticket.
 
+Write the reviewer summary prose in Simplified Technical English (load the `ste-writing`
+skill).
+
 ## Steps (no PR target: working-diff review)
 1. Ensure a `REVIEW.md` exists at the repo root. If it does not, offer to copy the template
    from the repo's `templates/REVIEW.md` and use that.

@@ -3,62 +3,68 @@ Stage: Plan
 Author: echo-contributor
 Status: draft
 
-# Extend /echo:review to review and comment on a GitHub PR
+# Write echo artifacts in Simplified Technical English
 
 ## Problem
-`/echo:review` today only reviews the local working diff: the `reviewer` subagent runs
-`git diff` and `git diff --cached`, and the command posts nothing. Reviewing a teammate's
-open pull request with the same reviewer is therefore a manual, error-prone dance done by
-hand outside the loop: check the PR branch out into a scratch worktree, point the reviewer
-at the `base...head` range, hand-build a GitHub review JSON payload, verify every inline
-anchor sits on a changed line, and POST it with `gh api`. We just did exactly this for a
-teammate's PR, and every step was manual. echo has no one-command way to review a PR or to
-publish the reviewer's findings back to it, even though the reviewer agent and the passes
-(bugs, security, compliance, YAGNI) are already the thing we want to apply.
+echo writes its documents in free-form English. The intent, spec, plan, and research
+artifacts, and the review and recap prose, use long sentences, passive voice, and varied
+words for one idea. This makes the documents harder to scan and harder for a second reader,
+or a model, to act on in one pass. The user wants every document that echo creates to follow
+Simplified Technical English (ASD-STE100), a controlled language that keeps technical writing
+short, active, and consistent.
 
 ## Proposed outcome
-`/echo:review` accepts an optional PR target and an opt-in flag to post. With no argument
-it behaves exactly as today (working diff, report only). Given a PR, it reviews that PR's
-`base...head` diff with the existing reviewer passes and summarizes findings locally; with
-the post flag it publishes those findings as a single inline GitHub review (advisory, not
-approve/request-changes), anchored to changed lines, with a summary body. Reviewing and
-commenting on a colleague's PR becomes one command instead of a manual sequence.
+Every model-written echo text follows the ASD-STE100 writing rules where the rules apply:
+active voice, short sentences, one instruction per sentence, one word for one meaning, and
+approved sentence structure. This covers the artifacts (intent, spec, plan, research), the
+review and recap prose, and the commit message and PR description prose. A single reusable
+skill holds the full public STE rule set. The artifact templates and the commit/PR and
+review flows point to that skill, so the guidance has one source of truth and new echo text
+reads as Simplified Technical English.
 
 ## Affected users / systems
-- The `/echo:review` command (`commands/review.md`) and its Codex mirror
-  (`.agents/skills/echo-review/SKILL.md`).
-- The `reviewer` subagent (`agents/reviewer.md`), which currently hardcodes the
-  working-diff selection.
-- A deterministic `bin/` helper for the GitHub side (PR resolution, diff range, posting),
-  consistent with how `bin/echo-review-comments` and `bin/echo-watch` already wrap `gh`.
-- Reviewers using echo against teammates' PRs; the PR authors who receive the comments.
+- The echo skill set: a new `ste-writing` skill, plus the `intent-template`,
+  `spec-template`, `plan-template`, and `research-template` skills that generate artifacts.
+- The prose that echo generates at review and recap time.
+- The commit message and PR description prose (the `/echo:ship` and `/echo:address-review`
+  flows and the `bin/echo-git` message text), with the required ticket prefix and the
+  Co-Authored-By trailer kept intact.
+- The repo docs that describe echo (CLAUDE.md conventions, README) so the rule is recorded.
+- The plugin version in `.claude-plugin/plugin.json` (this is a new feature; bump it).
 
 ## Constraints
-- Backward compatible: no argument means today's behavior, unchanged.
-- Posting is opt-in and never silent; a dry run / preview path before anything goes public,
-  mirroring the `--dry-run` convention in `echo-git ship` and `echo-review-comments`.
-- Follow repo conventions: GitHub/`gh` determinism lives in `bin/` (stdlib only, fail open,
-  exit 2 only for intended blocks, executable bit, compile check + tests); command markdown
-  stays thin prose. No em dashes. The reviewer agent still reports only and never edits.
-- Posted reviews are advisory (event COMMENT), never approve or request-changes, and carry
-  no diffs, secrets, or tokens in comment bodies.
-- Non-goals: no auto-fixing of PR findings (that is `/echo:address-review`'s job); no change
-  to the Jira comment flow; no new review passes.
+- Use the public ASD-STE100 writing rule set only. The official approved-word dictionary is
+  proprietary, so the skill states the rules and the word principles, not the copyrighted
+  word list.
+- Apply STE to prose that echo writes, not to code, file paths, commands, ticket ids, or
+  identifiers. STE never changes a command or a literal value. In commit messages and PR
+  descriptions, STE shapes the descriptive prose only; the `TICKET: ` prefix, the
+  `Ticket: <id>` body line, and the Co-Authored-By trailer stay exactly as the policy
+  requires.
+- Keep the existing no-em-dash convention; STE is added guidance, not a replacement.
+- Do not weaken any gate, test, or determinism. The templates are prose; the rule is prose.
+- Non-goal: no automated STE grammar checker in `bin/` or `lib/`, and no change to the loop
+  state machine.
+
+## Decisions (resolved at the intent gate)
+- STE applies to commit messages and PR descriptions as well as the `.echo/` artifacts and
+  the review/recap prose. The ticket prefix, the `Ticket: <id>` line, and the Co-Authored-By
+  trailer stay as the policy requires; STE shapes only the descriptive text.
+- No reviewer STE pass now. The templates instruct STE and the human gate catches drift. An
+  enforced pass stays a separate future feature.
+- The `ste-writing` skill encodes the full public ASD-STE100 writing rule set (all rule
+  groups), not a subset, with a pointer to the standard. The approved-word dictionary stays
+  out (proprietary); the skill states the word principles instead.
 
 ## Open questions
-- Argument shape: positional `<pr-url-or-number>` plus `--comment` to post and `--base` to
-  override the base branch? Leaning: yes, matching the `argument-hint` + `$ARGUMENTS`
-  convention and argparse in the `bin/` helper.
-- How to review the PR without disturbing the user's working tree: a throwaway git worktree
-  vs a detached fetch. Leaning: worktree under a temp dir, removed after.
-- Should posting require the review to be clean of important findings, or always post what
-  the reviewer returns? Leaning: always post what it returns; the human still decides.
-- Codex parity: the Codex reviewer mirror still omits YAGNI from its pass list (drift left
-  by the prior YAGNI work). Fold that fix in here or leave it. Leaning: fix in passing.
+- None remaining.
 
 ## How we know it worked
-- `/echo:review` with no args still reviews the working diff and posts nothing.
-- `/echo:review <pr>` reports findings from that PR's `base...head` diff.
-- `/echo:review <pr> --comment` (after a preview) publishes one inline review on the PR with
-  comments on changed lines, reproducing by command what we just did by hand.
-- Unit tests and smoke test stay green; the new `bin/` helper fails open with no `gh`/PR.
+- A new `ste-writing` skill exists and states the full public ASD-STE100 writing rule set in
+  actionable form.
+- The intent, spec, plan, and research templates reference the STE skill and tell the writer
+  to apply it, and the ship and address-review flows apply STE to commit/PR prose.
+- A newly generated artifact, and a new commit/PR description, read as Simplified Technical
+  English: short active sentences, one instruction per sentence, consistent terms, with the
+  required ticket prefix and trailer intact.
+- The plugin version is bumped, and the unit tests and smoke test stay green.

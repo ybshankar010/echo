@@ -13,6 +13,10 @@ $ARGUMENTS
 Load the `echo:address-review` skill (the reusable methodology and safety rules) before you
 start, the way `/echo:plan` loads `echo:plan-template`.
 
+Write the `-m` descriptive prose and the Jira comment prose in Simplified Technical English
+(load `echo:ste-writing`). Keep the `TICKET: ` prefix, the `Ticket: <id>` line, and the
+Co-Authored-By trailer exactly as policy requires; STE guides only the prose around them.
+
 1. Derive the ticket from the checked-out branch and confirm the gate is open:
    ```
    python3 "${CLAUDE_PLUGIN_ROOT}/bin/echo-stage" status

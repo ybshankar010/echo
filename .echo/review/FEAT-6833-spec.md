@@ -1,27 +1,13 @@
 # Critic re-check: FEAT-6833 spec (revised)
 
-Verdict: no blocking gaps remain. All four prior blockers are resolved.
+Verdict: no blocking gaps. All prior findings resolved.
 
-## Prior blockers
-1. post takes --worktree/--base/--head, cleanup after post: resolved (req 4, 5).
-2. Fork-safe fetch via pull/<n>/head: resolved (req 4).
-3. Strict JSON array, post validates, invalid to dropped: resolved (req 9, Design).
-4. PR-mode compliance rescoped to PR's stated intent: resolved (req 8).
-Important items (mandatory dry-run + confirm, exit-code contract, anchor edge cases and pure functions, force-push re-resolve, acceptance strengthening, secret/size handling): all addressed.
+- Blocker (recap): resolved. Req 5, Design, and Non-goals state recap is deterministic bin/echo-capture output and out of scope. No bin/ change implied.
+- Em-dash AC: resolved. Criterion 8 scopes to added lines.
+- Codex parity: resolved. Verified template mirrors are symlinks; echo-ship, echo-review, echo-address-review are real dirs; criterion 5 lists all three plus the new symlink.
+- Commit/PR -m: resolved. Req 4 and Design match.
+- Nits: resolved. smoke.sh template loop at ~lines 115-117 uses test -e; plugin.json is 0.6.0 so 0.7.0 is correct; criteria use grep -l.
 
-## Verified against repo
-- bin/echo-review-comments exists (own _gh at line 38); bin/echo-watch has _gh at line 50.
-- lib/echo_common.py: GH_CALL_TIMEOUT line 340, resolve_pr line 385. No ec.gh / ec.gh_json yet (spec says add them; fine).
-- agents/reviewer.md, commands/review.md exist; both Codex mirrors exist (.agents/skills/echo-review/SKILL.md, .codex/agents/reviewer.toml). Neither mirror contains YAGNI today, so AC6 is a real fix.
-- tests/test_echo.py loads bin scripts via importlib SourceFileLoader (line 19); smoke.sh has per-bin test -x lines (e.g. line 51).
-
-## Remaining important (non-blocking)
-1. Req 8 says compliance uses PR title/description "that prepare captured", but the prepare JSON in req 4 omits title and body (only resolve_pr_by_number returns them). Add title/body to prepare's output or state the command re-reads them.
-2. Req 4/11 and AC4 say `post --dry-run` touches no network, but post first re-resolves the head via gh. Either skip re-resolve on dry-run or relax the claim; as written the AC test needs gh stubbed and a real worktree.
-3. Force-push re-resolve: findings were produced against the old head; after switching to the new head the diff and line numbers may shift. Spec should say anchors are re-validated against the new diff (filter_findings does this if post diffs the new range) and that stale findings fall to dropped.
-
-## Nits
-- `origin/<base>` as diff_range relies on git fetch updating the remote-tracking ref; fetching into a named ref or using FETCH_HEAD for base is safer.
-- Remote is assumed to be named `origin`.
-- Reviewer runs on untrusted PR content (prompt injection); consider noting the reviewer is read-only and output is validated by post.
-- REVIEW.md lookup: from repo root or the worktree? Specify.
+Remaining nits (non-blocking):
+1. Criterion 8 uses git diff, which omits untracked new files (skills/ste-writing/SKILL.md) unless staged. Run after git add, or use git diff HEAD plus a direct grep on the new file.
+2. grep -c exits 1 when the count is 0; read the printed count, not the exit code.

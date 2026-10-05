@@ -1,47 +1,44 @@
 Ticket: FEAT-6833
 Stage: Build (checker report)
-Reviewer: echo:reviewer over the working diff + untracked bin/echo-review-pr
-Iterations: 2 builder passes (implement, then fix), reviewer clean of important findings
+Reviewer: echo:reviewer over the working diff + new skills/ste-writing/SKILL.md and symlink
+Iterations: 1 builder pass, reviewer clean of important findings
 
-# Extend /echo:review to review and comment on a GitHub PR - build review
+# Write echo artifacts in Simplified Technical English - build review
 
 Passes applied: bugs, security, compliance, YAGNI (inline defaults; no root REVIEW.md).
 
 ## Important findings
-None remaining. The first reviewer pass raised two important issues, both fixed in the
-second builder pass and confirmed resolved:
-1. Wrong-repo / wrong-PR on a URL target: `_parse_owner_repo_from_url` + `_reconcile_pr_repo`
-   in lib/echo_common.py now fail closed (return None) when a PR URL's repo differs from the
-   cwd repo; a plain PR number still uses the cwd repo.
-2. `new_side_lines` in bin/echo-review-pr now parses the `@@ -a,b +c,d @@` header and tracks
-   remaining new-side lines, so a deleted `--- old` or added `+++` line inside a hunk no
-   longer ends the hunk or resets the path.
+None.
 
-Also fixed in the same pass: exit-code contract (argparse exit 2 and uncaught exceptions map
-to 0 via `_run_main`; only genuine gh POST failure exits 1), `cleanup` path guard
-(`_is_safe_worktree` restricts to the temp dir + `echo-review-pr-` prefix), required
-`--base`/`--head` for a real post, and stale-head refresh skipping the post on a failed
-fetch/checkout.
+## Checks confirmed
+- Copyright: skills/ste-writing/SKILL.md states only the public ASD-STE100 rules, carries no
+  approved/unapproved word list, says it leaves out the proprietary dictionary, and points to
+  asd-ste100.org. Matches spec.
+- Commit/PR tokens: edits to commands/ship.md, commands/address-review.md, and the Codex
+  copies echo-ship / echo-address-review are insert-only; each kept the TICKET: prefix, the
+  Ticket: <id> line, and the Co-Authored-By trailer exact.
+- Scope boundary: the skill has a "Scope boundary" section limiting STE to prose and excluding
+  code, paths, commands, flags, ticket ids, identifiers, and the policy tokens.
+- Symlink: .agents/skills/ste-writing is tracked mode 120000 to ../../skills/ste-writing and
+  resolves.
+- Em dashes: none added in any feature file.
+- Version: .claude-plugin/plugin.json 0.6.0 -> 0.7.0.
+- Smoke: the new assertion uses test -e for the symlink; sound.
 
 ## Spec / plan compliance
-Matches spec reqs 1-12 and plan: executable bit, prepare/post/cleanup subcommands, fail-open
-prepare, unconditional cleanup in the command markdown, Codex parity (YAGNI added to both
-mirrors), and the PR-mode compliance rescope in agents/reviewer.md.
+Matches spec reqs 1-9 and the plan. The four templates, ship/address-review/review flows, the
+address-review Jira prose, the Codex copies, and the docs all point to ste-writing; recap left
+out (deterministic).
 
 ## Nits (none blocking)
-- `git fetch origin pull/<n>/head` assumes `origin` is the gh-resolved repo; a fork origin
-  vs upstream could pull a different PR with the same number (not covered by the repo
-  reconcile). Follow-up candidate.
-- `post --pr` is assumed a bare number; `prepare` always emits the number, so the normal flow
-  is fine, but a URL passed directly to `post` is unvalidated.
-- `--dry-run` with `--head` but no `--base` yields an empty `origin/None...` anchor set (all
-  findings dropped in the printed payload); no network touched.
-- `post` does not apply `_is_safe_worktree` (read-only git/gh in that cwd; low risk).
-- C-quoted `+++` paths (special characters) are not unquoted, so such files fold into the
-  summary rather than anchoring (safe degradation).
+1. Stage .echo/artifacts/FEAT-6833/plan.md before commit (it shows MM after the check-next
+   checkbox flips). Handled by git add -A at ship.
+2. A few of the skill's own bullets slightly exceed its stated sentence-length limit
+   (cosmetic dogfooding imperfection).
+3. commands/review.md and echo-review do not carry the policy-token caveat; fine, they do not
+   write commit text.
 
-## Verification observed
-- `python3 -m pytest tests/test_echo.py -q`: 110 passed.
-- `bash tests/smoke.sh`: ALL SMOKE CHECKS PASSED.
-- `python3 -m py_compile lib/echo_common.py bin/echo-*`: exit 0.
-- No em dashes in the changed files.
+## Verification observed (builder)
+- python3 -m pytest tests/test_echo.py -q: 110 passed.
+- bash tests/smoke.sh: ALL SMOKE CHECKS PASSED (new ste-writing block runs).
+- python3 -m py_compile lib/echo_common.py bin/echo-*: exit 0.

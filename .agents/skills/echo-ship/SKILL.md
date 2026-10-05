@@ -12,6 +12,10 @@ Codex port of echo's `/echo:ship` command. It drives the same loop through the s
 Skills have no structured arguments. Read the ticket id (`[A-Z]+-[0-9]+`), the commit message
 (`-m`), and any PR title/desc from what the user typed; never fabricate a ticket.
 
+Write the `-m` descriptive prose in Simplified Technical English (load the `ste-writing`
+skill). Keep the `TICKET: ` prefix, the `Ticket: <id>` body line, and the Co-Authored-By
+trailer exactly as policy requires; STE guides only the prose around them.
+
 ## Steps
 1. Verify there is a fresh passing verification for the active item (check
    `.echo/verify/<ticket>.md` or run the echo-verify flow). If not green, tell the user and

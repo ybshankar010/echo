@@ -116,7 +116,8 @@ research behind it.
 
 For Codex, the commands are also ported to Skills under `.agents/skills/`: one
 `echo-<name>/SKILL.md` per command (flow, research, intent, spec, plan, build, verify, review,
-ship, status, approve, next, watch), plus the four template skills. The agent roles are ported
+ship, status, approve, next, watch), plus the four template skills and the `ste-writing` skill
+(the Simplified Technical English writing rules echo prose follows). The agent roles are ported
 to TOMLs under `.codex/agents/` (builder, critic, reviewer, verifier, researcher). This port is
 additive and does not touch the Claude Code plugin surface. Read
 [`.agents/skills/README.md`](.agents/skills/README.md) for the known limitations first:

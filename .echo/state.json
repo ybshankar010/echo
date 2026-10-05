@@ -41,8 +41,8 @@
       "updated": "2026-09-07T16:15:15Z"
     },
     "FEAT-6833": {
-      "title": "Extend /echo:review to review and comment on a GitHub PR",
-      "stage": "done",
+      "title": "Write echo artifacts in Simplified Technical English (ASD-STE100)",
+      "stage": "ship",
       "gates": {
         "intent": "approved",
         "spec": "approved",
@@ -57,7 +57,7 @@
         "plan": ".echo/artifacts/FEAT-6833/plan.md"
       },
       "created": "2026-09-11T12:39:05Z",
-      "updated": "2026-10-05T07:33:16Z"
+      "updated": "2026-10-05T08:02:05Z"
     }
   }
 }

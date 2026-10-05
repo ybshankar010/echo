@@ -26,6 +26,7 @@ written. A good plan lets a different engineer implement it in one pass.
 - The Proof section must be runnable, not aspirational.
 - Keep the plan in sync with reality: if the build departs from it, update plan.md.
 - No em dashes; lean and concrete.
+- Write the prose in Simplified Technical English; load the `echo:ste-writing` skill.
 
 Write to `.echo/artifacts/<ticket>/plan.md` (artifacts are scoped per ticket; the
 `Artifacts:` line from `echo-stage status` shows the folder), then

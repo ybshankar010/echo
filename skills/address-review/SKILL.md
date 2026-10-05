@@ -36,6 +36,8 @@ leaving the loop and without weakening the change.
 - Fail open: no `gh`/auth/remote/PR/threads means the command changes nothing and exits clean.
 - Never self-approve an echo gate; leave approval to the developer.
 - No em dashes; lean and concrete.
+- Write the Jira comment and reply prose in Simplified Technical English (load
+  `echo:ste-writing`).
 
 The command loads this skill the way `/echo:plan` loads `echo:plan-template`. Determinism
 (thread enumeration/resolution, the ledger, the follow-up push) lives in the stdlib CLIs

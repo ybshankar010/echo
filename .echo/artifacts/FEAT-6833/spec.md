@@ -3,166 +3,119 @@ Stage: Design
 Derived from: intent.md
 Status: draft
 
-# Extend /echo:review to review and comment on a GitHub PR
+# Write echo artifacts in Simplified Technical English
 
 ## Overview
-Give `/echo:review` an optional PR target so the existing `reviewer` subagent can review a
-pull request's `base...head` diff, and an opt-in flag to publish its findings as one
-advisory inline GitHub review. The GitHub determinism (resolving the PR, preparing a
-throwaway worktree, parsing diff anchors, building and posting the payload) lives in a new
-stdlib `bin/echo-review-pr`, with the shared `gh` plumbing added once to
-`lib/echo_common.py` so no wrapper is duplicated. The command markdown stays thin
-orchestration and the reviewer agent still reports only. With no argument, behavior is
-identical to today (working diff, report only).
+Add a reusable `ste-writing` skill that states the full public ASD-STE100 writing rule set
+in actionable form. Point every echo flow that writes prose at this skill: the four artifact
+templates (intent, spec, plan, research), the ship and address-review flows that write commit
+and PR text, and the review and recap prose. The skill is the single source of truth. This is
+a prose and skill change. No `bin/` or `lib/` determinism changes.
 
 ## Requirements
-1. `/echo:review` with no arguments reviews the working diff (`git diff` + `git diff
-   --cached`) and posts nothing, exactly as today. (intent: Constraints, backward compatible)
-2. `/echo:review <pr-url-or-number>` reviews that PR's `base...head` diff with the PR-mode
-   passes (see req 8) and reports findings locally, posting nothing. (intent: Proposed outcome)
-3. `/echo:review <pr-url-or-number> --comment` publishes the reviewer's findings as a single
-   GitHub review with `event=COMMENT` (never approve or request-changes), a summary body, and
-   inline comments anchored to changed lines. It MUST show a dry-run preview and get explicit
-   user confirmation before the real post (req 6). (intent: Proposed outcome; Constraints)
-4. New `bin/echo-review-pr` (Python 3 stdlib only, executable, imports `echo_common as ec`)
-   owns all `gh`/git calls via three subcommands:
-   - `prepare --pr <url|number> [--base <branch>]`: resolve the PR in the current repo
-     (`ec.resolve_pr_by_number`, which runs `gh pr view <pr> --json
-     number,baseRefName,headRefName,headRefOid,url,isCrossRepository` plus `gh repo view
-     --json owner,name`). Fetch the base and the PR head by the fork-safe ref
-     (`git fetch origin <base>` and `git fetch origin pull/<n>/head`), then
-     `git worktree add --detach <tmp> FETCH_HEAD`. Print one JSON line with
-     `{number, owner, repo, base_ref, head_sha, worktree, diff_range, title, body}` where
-     `diff_range` is `origin/<base>...<head_sha>` and `title`/`body` are the PR's stated
-     intent (consumed by the req 8 compliance rescope). A `--base` override is reflected in
-     `base_ref`/`diff_range` so later steps inherit it.
-   - `post --pr <n> --worktree <path> --base <branch> --head <sha> --input <findings.json>
-     [--dry-run]`: for a real post, re-resolve the current PR head and, if it differs from
-     `--head`, re-fetch into the worktree, use the current head, and re-validate anchors
-     against the new diff (stale ones fall to `dropped`), so a force-push between prepare and
-     post does not cause a 422. This re-resolve is skipped under `--dry-run`, which performs
-     no network calls. Validate findings against the diff (req 7); build the payload with
-     `commit_id = <resolved head>`; `gh api --method POST repos/<owner>/<repo>/pulls/<n>/reviews
-     --input <file>`. `--dry-run` prints the payload and posts nothing.
-   - `cleanup --worktree <path>`: `git worktree remove --force <path>` (fail open).
-5. Orchestration order in `commands/review.md` for PR mode is fixed:
-   prepare -> spawn reviewer over `diff_range` in the `worktree` -> `post --dry-run`
-   (preview) -> user confirms -> `post` (real) -> `cleanup`. `cleanup` runs unconditionally,
-   including when the reviewer, preview, or post fails, so no worktree leaks.
-6. `commands/review.md` gains `argument-hint` and branches on `$ARGUMENTS`: no args is the
-   working-diff path (req 1); a PR target drives req 5. The real post happens only after the
-   human confirms the dry-run preview, mirroring the `--dry-run`-first idiom in `ship.md` and
-   `address-review.md`. (intent: Proposed outcome; Constraints, previewed)
-7. Anchor validation lives in pure, importable functions in `bin/echo-review-pr`, unit
-   tested without network:
-   - `new_side_lines(diff_text) -> {path: set[int]}` parses unified-diff hunks and collects
-     only RIGHT-side (added and context) line numbers per new-file path.
-   - `filter_findings(findings, anchors) -> (kept, dropped)` keeps single-line RIGHT-side
-     findings whose `path:line` is in `anchors`; everything else (LEFT/deleted lines,
-     renames, binary files, off-diff lines, malformed entries) goes to `dropped`.
-   - `build_review_payload(head_sha, summary, kept, dropped) -> dict` builds the COMMENT
-     review; dropped findings are folded into the summary body as text, never lost. Comment
-     and summary bodies are truncated to a safe length (GitHub's limit) and carry prose only,
-     never diffs, secrets, or tokens.
-8. PR mode rescopes the passes so nothing false is posted publicly: bugs, security, and YAGNI
-   apply; the compliance pass is NOT the echo `.echo/artifacts/<ticket>` spec/plan check (that
-   is meaningless for a teammate's PR) but a "matches the PR's stated intent" check using the
-   PR title and description that `prepare` captured. The working-diff path (req 1) keeps the
-   original compliance-vs-spec/plan pass. (intent: Constraints, no false findings)
-9. The reviewer emits findings for PR mode as a strict JSON array
-   `[{path, line, side, severity, body}]` (side defaults RIGHT). `commands/review.md` tells
-   the reviewer this output contract explicitly; `bin/echo-review-pr post` validates each
-   entry (required keys and types) and routes any invalid or off-diff entry to `dropped`
-   rather than raising. (intent: Affected systems)
-10. `agents/reviewer.md` step 1 is generalized: review `git diff` + `git diff --cached` by
-    default, but if the invoking command supplies an explicit diff range or command (and,
-    for PR mode, an output contract), use that instead. Still reports only; never edits.
-11. Fail-open and exit-code contract:
-    - `prepare` with no `gh`, no auth, no remote, or an unresolvable PR prints nothing and
-      exits 0.
-    - `post --dry-run`, or `post` with nothing valid to post, touches no network and exits 0.
-    - A genuine `gh` POST failure exits 1 so the command reports it. The script never exits 2
-      (reserved for blocking hooks).
-12. Codex parity: `.agents/skills/echo-review/SKILL.md` documents the PR arguments and states
-    that under Codex the orchestrator itself runs the prepare/post/cleanup CLIs (no Task tool;
-    the reviewer sandbox is read-only). Both it and `.codex/agents/reviewer.toml` list the
-    pass set as `bugs, security, compliance, YAGNI`, fixing the pre-existing YAGNI drift.
-    (intent: Open questions 4)
+1. A new skill `skills/ste-writing/SKILL.md` exists with `name:` and `description:`
+   frontmatter, and its body states the full public ASD-STE100 writing rules in actionable
+   form, grouped by theme (sentences, words, verbs, procedures, warnings, punctuation). The
+   skill states the approved-word principles but does not reproduce the proprietary
+   dictionary. (traces to intent: Proposed outcome; Decisions, full rule set)
+2. The skill lists the scope boundary: apply STE to prose only, never to code, file paths,
+   commands, ticket ids, or identifiers. (traces to intent: Constraints)
+3. The four artifact template skills (`skills/intent-template`, `skills/spec-template`,
+   `skills/plan-template`, `skills/research-template`) each reference `ste-writing` and tell
+   the writer to apply STE to the artifact prose. (traces to intent: Proposed outcome)
+4. The commit and PR prose follows STE: `commands/ship.md` and `commands/address-review.md`
+   instruct that the `-m` descriptive prose uses STE, while the `TICKET: ` prefix, the
+   `Ticket: <id>` body line, and the Co-Authored-By trailer stay exactly as policy requires.
+   `bin/echo-git` builds the PR body from the same `-m` string plus the trailer, so writing
+   the `-m` prose in STE is enough; `bin/echo-git` is not touched. The hardcoded followup
+   message `address review comments` is already short and imperative, so it stays. (traces to
+   intent: Decisions, commit/PR; Affected systems)
+5. The review summary prose follows STE: `commands/review.md` tells the reviewer to write its
+   summary in STE. The recap is deterministic output from `bin/echo-capture` f-strings, so it
+   is out of scope (see Non-goals); the requirement does not touch `bin/`. (traces to intent:
+   Proposed outcome)
+6. The Codex mirrors stay consistent. The four `.agents/skills/*-template` mirrors are
+   symlinks to `../../skills/*`, so the template edits reach Codex with no extra work. Add a
+   new `.agents/skills/ste-writing` symlink to `../../skills/ste-writing` (a symlink, not a
+   copy, so it never drifts). The Codex command skills `echo-ship`, `echo-review`, and
+   `echo-address-review` are real directory copies, so each gets the same STE note as its
+   `commands/*.md` source. (traces to intent: Affected systems)
+7. The repo docs record the rule: `CLAUDE.md` Conventions names the STE rule with a pointer
+   to the `ste-writing` skill, and `README.md` names the skill. (traces to intent: Affected
+   systems)
+8. The plugin version in `.claude-plugin/plugin.json` is bumped (minor; this is a new
+   feature). (traces to intent: Affected systems)
+9. No reviewer STE pass is added, and no STE checker is added to `bin/` or `lib/`. (traces to
+   intent: Decisions, no pass now; Constraints, non-goal)
 
 ## Design
-- `bin/echo-review-pr` follows `bin/echo-review-comments`: `#!/usr/bin/env python3`, adds
-  `../lib` to `sys.path`, imports `echo_common as ec`, argparse subcommands, executable bit
-  tracked. To avoid a third duplicated `gh` wrapper (one each in echo-review-comments and
-  echo-watch today), add a shared `ec.gh(args, cwd=None, timeout=ec.GH_CALL_TIMEOUT)` and
-  `ec.gh_json(args, cwd=None)` to `lib/echo_common.py` and use them here; the two existing
-  scripts are left as-is (not refactored in this change) to keep scope tight.
-- `ec.resolve_pr_by_number(pr, cwd)` is a new helper beside the existing branch-based
-  `ec.resolve_pr` (unchanged). It returns
-  `{number, owner, repo, base_ref, head_sha, head_ref, is_cross_repository, title, body}` or
-  None (fail closed). `prepare` and `post` both call it.
-- Worktree + diff reproduce, deterministically, the manual flow we used by hand: fetch the
-  base and `pull/<n>/head`, detached worktree at the head, review diff `origin/<base>...
-  <head_sha>`, remove the worktree after. The temp dir is unique per run.
-- Reviewer handoff: the reviewer returns the JSON array (req 9); `commands/review.md` writes
-  it to a temp file and passes it to `post`. The bin script is the single place that talks to
-  `gh`; the model only produces the array, and `post` is the validator of record.
-- Posting payload: `{commit_id, event:"COMMENT", body, comments:[{path, line, side, body}]}`
-  via `gh api --method POST`. This is exactly the call we ran manually, now parameterized.
+- `skills/ste-writing/SKILL.md` follows the shape of the existing template skills: `---`
+  frontmatter with `name: ste-writing` and a one-line `description`, then a terse body. The
+  body groups the public ASD-STE100 writing rules so a writer can apply them without the
+  standard in hand. It names the dictionary as out of scope (proprietary) and states the
+  approved-word principles (one word for one meaning, use the approved sense, avoid synonyms).
+- Each artifact template gains one short line near its Rules section: "Write the prose in
+  Simplified Technical English; load the `echo:ste-writing` skill." This mirrors how the
+  templates already cross-reference, for example how `address-review.md` names
+  `echo:plan-template`. The templates keep their existing structure and the no-em-dash rule.
+- `commands/ship.md` and `commands/address-review.md` gain one line: write the commit message
+  and PR description prose in STE (load `echo:ste-writing`), and keep the ticket prefix, the
+  `Ticket: <id>` line, and the Co-Authored-By trailer unchanged. `bin/echo-git` is not
+  touched; it only prepends the prefix and the trailer to the model-supplied prose, so the
+  STE change is prose guidance in the command markdown, not determinism.
+- Review: `commands/review.md` already spawns the reviewer; add the STE line to the reviewer
+  prompt for the summary prose. Recap is deterministic (`bin/echo-capture` writes it from
+  f-strings), so it stays out of scope; applying STE there would mean a `bin/` change, which
+  is a non-goal.
+- Codex parity: add the `.agents/skills/ste-writing` symlink to `../../skills/ste-writing`
+  (matching the symlinked template mirrors). The template mirrors are already symlinks, so
+  their edits need no Codex action. Edit the real copies `echo-ship`, `echo-review`, and
+  `echo-address-review` to carry the STE note their `commands/*.md` sources carry.
+- `CLAUDE.md` Conventions gains a one-line rule beside the no-em-dash rule. `README.md` adds
+  `ste-writing` to the skill or feature list.
 
 ## Flagged concerns
-- External publication (security/etiquette): posting lands on a colleague's PR and notifies
-  them. Mitigation: opt-in (`--comment`), mandatory dry-run preview plus explicit confirm
-  (reqs 3, 6), advisory COMMENT only, prose-only bodies with no diffs/secrets/tokens and
-  size truncation (req 7). The rescoped compliance pass (req 8) stops false "does not match
-  echo spec" findings from ever being posted.
-- Wrong-repo / wrong-PR: the command runs in the target repo's working dir; `prepare` prints
-  the resolved `owner/repo/number` in the preview so the user confirms before any post.
-- Worktree leakage: `cleanup` runs unconditionally after the review (req 5); unique temp dir.
-- Force-push between prepare and post: `post` re-resolves the head and posts against the
-  current head to avoid a 422 (req 4).
-- Token/auth: delegated entirely to `gh`; the script never reads or logs tokens.
-- Prompt injection: the reviewer reads untrusted PR content, so a PR could try to steer its
-  output. Mitigation: `post` is the validator of record (req 9) and only ever emits an
-  advisory COMMENT review of prose findings; it cannot be driven to approve, merge, or run
-  anything. REVIEW.md is read from the prepared worktree root (the PR's own tree), falling
-  back to the reviewer's inline defaults when absent. The remote is assumed to be `origin`.
+- Copyright: the official ASD-STE100 dictionary is proprietary. Mitigation: the skill states
+  the public writing rules and the word principles only, with a pointer to the standard, and
+  does not reproduce the approved-word list. Not a security or privacy risk.
+- Drift across sites: STE is named in several files (one skill, four templates, two command
+  flows, two Codex mirrors, two doc files). Mitigation: the substance lives only in
+  `ste-writing`; every other site is a one-line pointer, so there is one source to maintain.
+  A deterministic doc-sync test is a non-goal (same reasoning as past echo features).
+- Readability of echo itself: STE could make echo's own prose terse. Accepted: terse,
+  consistent prose is the goal; the templates keep their required sections.
 
 ## Non-goals
-- No auto-fixing of PR findings (that remains `/echo:address-review`'s job).
-- No change to the Jira comment flow, the echo loop state machine, or the gates.
-- No new review passes, and no change to severity or the nit cap.
-- No approve/request-changes reviews; advisory COMMENT only.
-- No refactor of the existing `gh` wrappers in echo-review-comments / echo-watch.
-- No special fork handling beyond `pull/<n>/head` and what `gh` resolves by default.
+- No reviewer STE pass and no STE grammar checker in `bin/` or `lib/`.
+- No change to the loop state machine, the gates, or the Jira flow.
+- No change to `bin/echo-git` message assembly (prefix and trailer stay as code).
+- No STE applied to the recap: `bin/echo-capture` writes it deterministically from f-strings,
+  and touching `bin/` is out of scope.
+- No reproduction of the proprietary approved-word dictionary.
 
 ## Acceptance criteria
-1. `commands/review.md` has an `argument-hint` and a no-argument path that still spawns the
-   reviewer over the working diff (`grep -n "argument-hint" commands/review.md` matches; the
-   working-diff wording is retained).
-2. `bin/echo-review-pr` exists, is executable (`test -x bin/echo-review-pr`),
-   `python3 -m py_compile bin/echo-review-pr` exits 0, and `bin/echo-review-pr --help` lists
-   `prepare`, `post`, `cleanup`.
-3. Pure functions are importable and unit tested in `tests/test_echo.py` (import the script
-   via `importlib` as the suite already does for `bin/echo-*`):
-   - `new_side_lines` parses a sample unified diff to the correct `{path: {lines}}`.
-   - `filter_findings` keeps an on-diff RIGHT finding and routes an off-diff line, a LEFT
-     finding, and a malformed entry to `dropped`.
-   - `build_review_payload` yields `event=="COMMENT"`, the given `commit_id`, one comment per
-     kept finding, and the dropped findings folded into `body`; over-long bodies are truncated.
-4. Network-free CLI tests mirror `test_review_comments_fetch_fail_open_no_pr`: with `gh`
-   stubbed to fail (or absent on PATH), `prepare` prints nothing and exits 0; `post
-   --dry-run --input <file>` prints a payload and exits 0 touching no network; `cleanup` on a
-   missing worktree exits 0. `ec.resolve_pr_by_number` returns None when `gh` fails.
-5. `agents/reviewer.md` step 1 states the default working-diff behavior and that an explicit
-   range/command from the caller overrides it (`grep -n "range" agents/reviewer.md` matches).
-6. `.agents/skills/echo-review/SKILL.md` documents the PR arguments and the Codex
-   orchestration note, and both it and `.codex/agents/reviewer.toml` contain `YAGNI` in the
-   pass list (`grep -l "YAGNI" .agents/skills/echo-review/SKILL.md .codex/agents/reviewer.toml`
-   lists both).
-7. `tests/smoke.sh` gains an assertion that `bin/echo-review-pr` exists and is executable,
-   alongside the existing per-bin checks.
-8. No em dashes in any changed file (`grep -n` for the em dash over commands/review.md,
-   agents/reviewer.md, bin/echo-review-pr, lib/echo_common.py, .agents/skills/echo-review/SKILL.md,
-   .codex/agents/reviewer.toml returns nothing).
-9. `python3 -m pytest tests/test_echo.py -q` and `bash tests/smoke.sh` stay green;
-   `python3 -m py_compile lib/echo_common.py bin/echo-*` exits 0.
+1. `test -f skills/ste-writing/SKILL.md` and it has `^name:` and `^description:` frontmatter;
+   its body names ASD-STE100 and the scope boundary (prose only, not code or commands).
+2. The four templates reference the skill:
+   `grep -l "ste-writing" skills/intent-template/SKILL.md skills/spec-template/SKILL.md skills/plan-template/SKILL.md skills/research-template/SKILL.md`
+   lists all four.
+3. Commit/PR STE with policy intact:
+   `grep -l "ste-writing" commands/ship.md commands/address-review.md` lists both, and those
+   files still name the Co-Authored-By trailer and the ticket prefix.
+4. Review prose: `grep -in "ste-writing\|Simplified Technical English" commands/review.md`
+   matches.
+5. Codex parity: `test -e .agents/skills/ste-writing/SKILL.md` (the new symlink resolves),
+   and `grep -l "ste-writing" .agents/skills/echo-ship/SKILL.md .agents/skills/echo-review/SKILL.md .agents/skills/echo-address-review/SKILL.md`
+   lists all three.
+6. Docs: `grep -l "Simplified Technical English" CLAUDE.md README.md` lists both files.
+7. Version bumped: `.claude-plugin/plugin.json` version is `0.7.0` (from `0.6.0`).
+8. No em dashes ADDED by this change (pre-existing ones in touched files are out of scope).
+   After `git add -A` so the new `skills/ste-writing/SKILL.md` is included, the added lines
+   carry no em dash: `git diff --cached -U0 | grep '^+' | grep "—"` prints nothing (read the
+   printed lines, not the `grep` exit code, which is 1 when the count is 0).
+9. `python3 -m pytest tests/test_echo.py -q` and `bash tests/smoke.sh` stay green. Add a smoke
+   assertion beside the template-skills loop (around smoke.sh lines 115-117): `test -f
+   skills/ste-writing/SKILL.md` with `grep -q "^name:"` and `grep -q "^description:"`, and
+   `test -e .agents/skills/ste-writing/SKILL.md` (test -e, since it is a symlink).
+   `python3 -m py_compile lib/echo_common.py bin/echo-*` exits 0 (no code changed, sanity
+   only).
