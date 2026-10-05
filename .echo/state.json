@@ -42,7 +42,7 @@
     },
     "FEAT-6833": {
       "title": "Extend /echo:review to review and comment on a GitHub PR",
-      "stage": "ship",
+      "stage": "done",
       "gates": {
         "intent": "approved",
         "spec": "approved",
@@ -57,7 +57,7 @@
         "plan": ".echo/artifacts/FEAT-6833/plan.md"
       },
       "created": "2026-09-11T12:39:05Z",
-      "updated": "2026-10-05T07:32:51Z"
+      "updated": "2026-10-05T07:33:16Z"
     }
   }
 }
