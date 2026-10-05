@@ -31,7 +31,7 @@ until it is clean or the iteration cap is hit. This is the maker-checker loop.
    changed, checks run with real results, and anything you could not implement." Pass
    along: $ARGUMENTS
 4. Checker: spawn the `reviewer` subagent (Task tool) with: "Read REVIEW.md and apply its
-   passes (bugs, security, compliance) to the current working diff (`git diff` and staged
+   passes (bugs, security, compliance, YAGNI) to the current working diff (`git diff` and staged
    changes). Report findings ranked by severity, and check the change matches
    `.echo/artifacts/<ticket>/spec.md` and `.echo/artifacts/<ticket>/plan.md`. Do not edit
    any files; report only." Substitute the active `<ticket>` from `echo-stage status`.

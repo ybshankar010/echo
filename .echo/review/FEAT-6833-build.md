@@ -1,30 +1,39 @@
-# Build review: FEAT-6833 (address code review comments)
+Ticket: FEAT-6833
+Stage: Build (checker report)
+Reviewer: echo:reviewer over the working diff
+Iterations: 1 builder pass, reviewer clean
 
-- Timestamp: 2026-09-21
-- Reviewer pass: bugs / security / compliance over the working diff
-- Result: no blocking, no important findings.
+# YAGNI pass build review
 
-## Verified clean
-- Ticket enforcement: `echo-git followup` exits 2 with no ticket and on base/main/master.
-- `followup` never rebases and never runs `gh pr create` (only add/commit/push + `gh pr view`).
-- Fail-open discipline across `echo-review-comments` (every early return exits 0).
-- `resolve --dry-run` touches no network and writes no ledger.
-- Ticket regex prevents path-separator injection into ledger/artifact paths.
-- GraphQL calls use argv lists (no shell), correct `-f`/`-F` types; no shell-injection surface.
-- One-line truncation on every stored/printed body; ledger stores id/status/ts/commit only.
-- No em dashes introduced; executable bits present on the new CLI.
-- Implementation matches spec/plan requirements 1-10 point for point.
+Review used the inline default passes (no root REVIEW.md exists) plus templates/REVIEW.md
+as the reference. Passes applied: bugs, security, compliance, YAGNI.
 
-## Minor nits
-- Fixed: null `line` rendered as `path:None` (now shows just the path via `_loc`).
-- Fixed: base-branch followup test now pins the branch name (no dependency on
-  `init.defaultBranch`).
-- Accepted (documented limitations): GraphQL `reviewThreads(first:100)` has no pagination
-  (a PR with >100 threads drops the overflow); the stage/commit block is duplicated between
-  `ship` and `followup`; the `resolve_pr` two-call glue is not directly unit-tested (its pure
-  parsers are).
+## Important findings
+None.
 
-## Proof
-- `python3 -m py_compile lib/echo_common.py bin/echo-*` -> exit 0.
-- `python3 -m pytest tests/test_echo.py -q` -> 95 passed.
-- `bash tests/smoke.sh` -> ALL SMOKE CHECKS PASSED.
+## Spec and plan compliance
+Change matches both spec.md and plan.md.
+- Req 1 and 2: templates/REVIEW.md adds the YAGNI bullet and the "YAGNI: do not flag"
+  section; wording identical to the plan's exact wording.
+- Req 3 and 4: agents/reviewer.md carries the flag rule, the guard, the "quality nits,
+  not important" note, and the opt-out note; the frontmatter description names YAGNI.
+- Req 5 and 6: the pass enumeration is `(bugs, security, compliance, YAGNI)` at
+  commands/review.md:10 and commands/build.md:34. All four sites agree.
+- The two em dashes the plan listed (reviewer.md:27, review.md:13) are gone;
+  `grep "—"` over the four files returns nothing (rc=1).
+- No changes under bin/, lib/, or tests/. Diff touches only the four docs plus .echo/
+  artifacts.
+
+## Nits (none blocking)
+1. commands/review.md:10 and commands/build.md:34: the edit pushed the line past the
+   neighbouring wrap width (cosmetic only).
+2. agents/reviewer.md:20-28: YAGNI is described as a "nit" yet reads as a peer of the
+   other passes. Code clearly states findings are nits, matching the spec. Not a defect.
+3. Accepted limitation from the spec stands: a target repo that copied the old template
+   keeps its own REVIEW.md with no YAGNI, so under the opt-out rule it will not get the
+   pass until it re-copies the template. Documented, not a bug.
+
+## Out of scope (not reviewed)
+- .echo/research/cursor-pstack-plugin.md is untracked and outside the four-file focus.
+- pytest and smoke.sh not run by the reviewer; nothing determinism-facing changed (the
+  builder ran them: 95 passed, smoke green).

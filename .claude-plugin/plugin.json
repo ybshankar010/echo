@@ -1,6 +1,6 @@
 {
   "name": "echo",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A personal AI-native SDLC plugin: drive one work item through Plan -> Design -> Build -> Test -> Ship as version-controlled artifacts, with human gates, a hard verification gate, file-based memory, and a Jira-ticket-enforcing git/PR flow.",
   "author": { "name": "echo-contributor" },
   "keywords": ["sdlc", "workflow", "verification", "memory", "git", "jira", "personal"]
