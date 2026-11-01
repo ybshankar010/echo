@@ -1,7 +1,7 @@
 <!-- echo:auto — regenerated each session Stop -->
-- Updated: 2026-11-01T08:16:29Z
+- Updated: 2026-11-01T08:20:27Z
 - Item: FEAT-6833 — Write echo artifacts in Simplified Technical English (ASD-STE100)
 - Stage: done (gate: n/a)
 - Branch: main
-- Last commit: 2e91a29 FEAT-6833: Mark STE loop complete (ship -> done)
-- Uncommitted changes (2): .echo/episodes.jsonl, .echo/recap.md
+- Last commit: fce6379 FEAT-6833: Replace ticket keys in capture history
+- Working tree clean
