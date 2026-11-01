@@ -162,3 +162,8 @@
 {"ts": "2026-11-01T08:12:31Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "b4d3c0c FEAT-6833: Mark STE loop complete (ship -> done)", "changed": []}
 {"ts": "2026-11-01T08:16:29Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "2e91a29 FEAT-6833: Mark STE loop complete (ship -> done)", "changed": [".echo/episodes.jsonl", ".echo/recap.md"]}
 {"ts": "2026-11-01T08:20:27Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "fce6379 FEAT-6833: Replace ticket keys in capture history", "changed": []}
+{"ts": "2026-11-01T08:21:33Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "6f8fb6d FEAT-6833: Sync capture state after push", "changed": []}
+{"ts": "2026-11-01T08:35:33Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "6f8fb6d FEAT-6833: Sync capture state after push", "changed": [".echo/episodes.jsonl", ".echo/recap.md"]}
+{"ts": "2026-11-01T08:35:45Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "6f8fb6d FEAT-6833: Sync capture state after push", "changed": [".echo/episodes.jsonl", ".echo/recap.md"]}
+{"ts": "2026-11-01T08:40:03Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "6f8fb6d FEAT-6833: Sync capture state after push", "changed": [".echo/episodes.jsonl", ".echo/recap.md"]}
+{"ts": "2026-11-01T08:42:23Z", "ticket": "FEAT-6833", "stage": "done", "branch": "main", "last_commit": "6f8fb6d FEAT-6833: Sync capture state after push", "changed": [".echo/episodes.jsonl", ".echo/recap.md"]}
