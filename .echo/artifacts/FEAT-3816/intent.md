@@ -9,7 +9,7 @@
 My development loop is fast at writing code but slow and inconsistent at the
 human-speed stages around it: pinning down what I'm actually building, keeping a
 written plan before I code, verifying "done" really means tested, and shipping
-through the organization git/PR + Jira process. Context also evaporates between
+through the organization's GitHub PR and Jira process. Context also evaporates between
 sessions — when I come back to a task (or a session compacts) I re-derive where I
 was. Anthropic's "AI-native SDLC playbook" describes a looped, artifact-driven
 process that fixes exactly this, but it is written for enterprise adoption and
@@ -32,7 +32,7 @@ handling the branch/commit/rebase/PR flow with the Jira ticket enforced.
 - **Per-repo working tree:** echo writes committed state under `.echo/`
   (`artifacts/`, `stage.yaml`, `verify/`, `recap.md`, `episodes.jsonl`).
 - **git + GitHub (`gh`):** the Ship stage creates branches/commits/PRs.
-- **organization Jira policy:** every commit/PR must carry a ticket id `[A-Z]+-[0-9]+`.
+- **organization's Jira ticket policy:** every commit/PR must carry a ticket id `[A-Z]+-[0-9]+`.
 
 ## Constraints
 - **Scope: solo-dev loop only.** Out of scope for v1 (future/team): managed MDM

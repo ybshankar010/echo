@@ -242,7 +242,7 @@ was changed.
   Codex CLI install to validate AGENTS.md discovery, skill triggering, and MCP calls
   end-to-end.
 - This document does not address licensing/approval to point Codex (an OpenAI-hosted
-  product) at the same Atlassian Jira instance organization uses with the Claude Code MCP
+  product) at the same Atlassian Jira instance used by the organization with the Claude Code MCP
   integration; that is an org/security question, not a technical one, and was out of scope
   here.
 

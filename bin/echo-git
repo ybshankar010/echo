@@ -5,7 +5,7 @@ Usage:
   echo-git ship --message "..." [--title "..."] [--desc slug]
                 [--ticket T] [--base develop] [--staged] [--dry-run]
 
-Enforces the organization Jira policy: every commit and PR carries a ticket id
+Enforces the organization's Jira ticket policy: every commit and PR carries a ticket id
 ([A-Z]+-[0-9]+). Never fabricates a ticket. Pauses (non-zero, no auto-resolve) on
 rebase conflicts. Requires `gh` for PR creation; if absent/unauthenticated it
 stops after push and prints the manual command.

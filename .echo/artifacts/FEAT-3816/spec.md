@@ -139,7 +139,7 @@ Global tier (`~/.claude/echo/`) is **deferred** per intent decision 1.
 - **Security:** never commit secrets; `echo-git` does not add a secret scanner in v1
   but must not print tokens; recommend gitleaks as a follow-up. `echo-recall`
   injects only artifact/recap text, never env or credentials.
-- **Compliance (organization):** commit + PR ticket enforcement is mandatory and lives
+- **Compliance policy:** commit + PR ticket enforcement is mandatory and lives
   in two independent layers (the `commit-msg` git hook and `echo-git`), so the
   policy holds even outside Claude.
 - **Safety:** all gates **fail open when they cannot map the active item** (no

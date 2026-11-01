@@ -3,7 +3,7 @@
 A personal, AI-native SDLC plugin for Claude Code. It drives one work item through
 **Plan -> Design -> Build -> Test -> Ship** as version-controlled markdown artifacts,
 with an explicit human gate at each boundary, deterministic guardrails, file-based
-memory that survives session restarts, and a git/PR flow that enforces the organization
+memory that survives session restarts, and a git/PR flow that enforces the organization's
 Jira ticket policy.
 
 Built by following the [AI-native SDLC playbook](https://claude.com/blog/the-ai-native-sdlc-playbook)
